@@ -56,7 +56,10 @@ jobs:
 
     - name: Generate index.html for repository browsing
       run: |
-        cat > gh-pages/index.html << 'EOF'
+        # Extract version from tag (remove 'v' prefix)
+        VERSION=${GITHUB_REF_NAME#v}
+        
+        cat > gh-pages/index.html << EOF
         <!DOCTYPE html>
         <html>
         <head>
@@ -65,13 +68,18 @@ jobs:
                 body { font-family: Arial, sans-serif; margin: 40px; }
                 .code { background-color: #f4f4f4; padding: 10px; border-radius: 5px; }
                 h1, h2 { color: #333; }
+                .note { background-color: #e7f3ff; padding: 15px; border-left: 4px solid #2196F3; margin: 20px 0; }
             </style>
         </head>
         <body>
             <h1>Niord S-124 XML Bindings Maven Repository</h1>
             <p>This is a Maven repository hosted on GitHub Pages for the Niord S-124 XML Bindings project.</p>
             
-            <h2>Usage</h2>
+            <div class="note">
+                <strong>💡 Recommendation:</strong> Consider using <a href="https://jitpack.io/#NiordOrg/niord-s124-xml-bindings">JitPack</a> instead - no authentication required and automatically builds from GitHub releases.
+            </div>
+            
+            <h2>Usage (GitHub Pages)</h2>
             <p>Add this repository to your <code>pom.xml</code>:</p>
             <pre class="code">
 &lt;repositories&gt;
@@ -81,19 +89,35 @@ jobs:
     &lt;/repository&gt;
 &lt;/repositories&gt;</pre>
             
-            <h2>Available Artifacts</h2>
+            <h2>Available Artifacts (Version ${VERSION})</h2>
             <p>Then add the dependencies:</p>
             <pre class="code">
 &lt;dependency&gt;
     &lt;groupId&gt;dma.dk.niord.s100.xml-bindings&lt;/groupId&gt;
     &lt;artifactId&gt;s100-5_2_0-xml-bindings&lt;/artifactId&gt;
-    &lt;version&gt;0.0.1&lt;/version&gt;
+    &lt;version&gt;${VERSION}&lt;/version&gt;
 &lt;/dependency&gt;
 
 &lt;dependency&gt;
     &lt;groupId&gt;dma.dk.niord.s100.xml-bindings&lt;/groupId&gt;
     &lt;artifactId&gt;s124-2_0_1-xml-bindings&lt;/artifactId&gt;
-    &lt;version&gt;0.0.1&lt;/version&gt;
+    &lt;version&gt;${VERSION}&lt;/version&gt;
+&lt;/dependency&gt;</pre>
+
+            <h2>JitPack Alternative (Recommended)</h2>
+            <p>For easier usage without authentication:</p>
+            <pre class="code">
+&lt;repositories&gt;
+    &lt;repository&gt;
+        &lt;id&gt;jitpack.io&lt;/id&gt;
+        &lt;url&gt;https://jitpack.io&lt;/url&gt;
+    &lt;/repository&gt;
+&lt;/repositories&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.github.NiordOrg.niord-s124-xml-bindings&lt;/groupId&gt;
+    &lt;artifactId&gt;s124-2_0_1-xml-bindings&lt;/artifactId&gt;
+    &lt;version&gt;v${VERSION}&lt;/version&gt;
 &lt;/dependency&gt;</pre>
             
             <h2>Repository Structure</h2>

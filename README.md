@@ -48,7 +48,9 @@ Once the tag is pushed, GitHub Actions will automatically:
 
 1. Build the project with Java 21
 2. Run tests
-3. Deploy artifacts to GitHub Packages
+3. Deploy artifacts to both:
+   - GitHub Packages (requires authentication)
+   - GitHub Pages Maven repository (publicly accessible)
 
 Monitor the build status in the Actions tab of the GitHub repository.
 
@@ -64,9 +66,22 @@ After successful deployment, verify the packages are available:
 
 ## Using Released Packages
 
-To use the released packages in other projects, add the following to your `pom.xml`:
+The packages are available from two sources:
 
-### Repository Configuration
+### Option 1: GitHub Pages (No Authentication Required)
+
+Add the following to your `pom.xml`:
+
+```xml
+<repositories>
+    <repository>
+        <id>niord-s124-xml-bindings</id>
+        <url>https://niordorg.github.io/niord-s124-xml-bindings/repository</url>
+    </repository>
+</repositories>
+```
+
+### Option 2: GitHub Packages (Authentication Required)
 
 ```xml
 <repositories>
@@ -76,6 +91,22 @@ To use the released packages in other projects, add the following to your `pom.x
     </repository>
 </repositories>
 ```
+
+For GitHub Packages, you need to authenticate. Add to your `~/.m2/settings.xml`:
+
+```xml
+<settings>
+    <servers>
+        <server>
+            <id>github</id>
+            <username>YOUR_GITHUB_USERNAME</username>
+            <password>YOUR_GITHUB_TOKEN</password>
+        </server>
+    </servers>
+</settings>
+```
+
+Create a GitHub Personal Access Token with `read:packages` scope at: https://github.com/settings/tokens
 
 ### Dependencies
 
@@ -96,24 +127,6 @@ To use the released packages in other projects, add the following to your `pom.x
     </dependency>
 </dependencies>
 ```
-
-### Authentication
-
-To download packages from GitHub Packages, you need to authenticate. Add to your `~/.m2/settings.xml`:
-
-```xml
-<settings>
-    <servers>
-        <server>
-            <id>github</id>
-            <username>YOUR_GITHUB_USERNAME</username>
-            <password>YOUR_GITHUB_TOKEN</password>
-        </server>
-    </servers>
-</settings>
-```
-
-Create a GitHub Personal Access Token with `read:packages` scope at: https://github.com/settings/tokens
 
 ## Manual Deployment
 

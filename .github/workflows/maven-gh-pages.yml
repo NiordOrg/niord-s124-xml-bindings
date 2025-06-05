@@ -1,0 +1,112 @@
+name: Deploy to GitHub Pages Maven Repository
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Build and Deploy to Local Repository
+      run: |
+        mvn clean deploy -Pgithub-pages
+        
+    - name: Checkout gh-pages branch
+      uses: actions/checkout@v4
+      with:
+        ref: gh-pages
+        path: gh-pages
+
+    - name: Create gh-pages branch if it doesn't exist
+      run: |
+        if [ ! -d "gh-pages/.git" ]; then
+          mkdir -p gh-pages
+          cd gh-pages
+          git init
+          git checkout -b gh-pages
+          cd ..
+        fi
+
+    - name: Copy Maven artifacts to gh-pages
+      run: |
+        # Ensure the repository structure exists
+        mkdir -p gh-pages/repository
+        
+        # Copy the deployed artifacts
+        cp -r target/mvn-repo/* gh-pages/repository/ || true
+        cp -r s-100/target/mvn-repo/* gh-pages/repository/ || true
+        cp -r s-124/target/mvn-repo/* gh-pages/repository/ || true
+
+    - name: Generate index.html for repository browsing
+      run: |
+        cat > gh-pages/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Niord S-124 XML Bindings Maven Repository</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; }
+                .code { background-color: #f4f4f4; padding: 10px; border-radius: 5px; }
+                h1, h2 { color: #333; }
+            </style>
+        </head>
+        <body>
+            <h1>Niord S-124 XML Bindings Maven Repository</h1>
+            <p>This is a Maven repository hosted on GitHub Pages for the Niord S-124 XML Bindings project.</p>
+            
+            <h2>Usage</h2>
+            <p>Add this repository to your <code>pom.xml</code>:</p>
+            <pre class="code">
+&lt;repositories&gt;
+    &lt;repository&gt;
+        &lt;id&gt;niord-s124-xml-bindings&lt;/id&gt;
+        &lt;url&gt;https://niordorg.github.io/niord-s124-xml-bindings/repository&lt;/url&gt;
+    &lt;/repository&gt;
+&lt;/repositories&gt;</pre>
+            
+            <h2>Available Artifacts</h2>
+            <p>Then add the dependencies:</p>
+            <pre class="code">
+&lt;dependency&gt;
+    &lt;groupId&gt;dma.dk.niord.s100.xml-bindings&lt;/groupId&gt;
+    &lt;artifactId&gt;s100-5_2_0-xml-bindings&lt;/artifactId&gt;
+    &lt;version&gt;0.0.1&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;dma.dk.niord.s100.xml-bindings&lt;/groupId&gt;
+    &lt;artifactId&gt;s124-2_0_1-xml-bindings&lt;/artifactId&gt;
+    &lt;version&gt;0.0.1&lt;/version&gt;
+&lt;/dependency&gt;</pre>
+            
+            <h2>Repository Structure</h2>
+            <p><a href="repository/">Browse Repository</a></p>
+        </body>
+        </html>
+        EOF
+
+    - name: Commit and push to gh-pages
+      run: |
+        cd gh-pages
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add .
+        git commit -m "Deploy Maven artifacts for ${{ github.ref_name }}" || echo "No changes to commit"
+        git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} gh-pages --force

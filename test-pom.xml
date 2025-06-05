@@ -43,11 +43,11 @@
         </dependency>
         -->
         
-        <!-- Option 3: Using actual artifactId (uncomment to test) -->
+        <!-- Option 3: Using directory name as artifactId -->
         <dependency>
             <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
-            <artifactId>s124-2_0_1-xml-bindings</artifactId>
-            <version>v0.0.3</version>
+            <artifactId>s-124</artifactId>
+            <version>v0.0.4</version>
         </dependency>
     </dependencies>
 </project>

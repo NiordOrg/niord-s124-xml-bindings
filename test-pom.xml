@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+    http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>test</groupId>
+    <artifactId>jitpack-test</artifactId>
+    <version>1.0.0</version>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- Test different dependency formats -->
+        
+        <!-- Option 1: Using module directory name -->
+        <!--
+        <dependency>
+            <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
+            <artifactId>s-124</artifactId>
+            <version>v0.0.3</version>
+        </dependency>
+        -->
+        
+        <!-- Option 2: Using the root project (uncomment to test) -->
+        <!--
+        <dependency>
+            <groupId>com.github.NiordOrg</groupId>
+            <artifactId>niord-s124-xml-bindings</artifactId>
+            <version>v0.0.3</version>
+        </dependency>
+        -->
+        
+        <!-- Option 3: Using actual artifactId (uncomment to test) -->
+        <dependency>
+            <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
+            <artifactId>s124-2_0_1-xml-bindings</artifactId>
+            <version>v0.0.3</version>
+        </dependency>
+    </dependencies>
+</project>

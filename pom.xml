@@ -6,7 +6,7 @@
 
     <groupId>dma.dk.niord.s100.xml-bindings</groupId>
     <artifactId>xml-bindingings-root-pom</artifactId>
-    <version>0.0.3</version>
+    <version>0.0.4</version>
     <packaging>pom</packaging>
 
     <name>XmlBindings-Root-Pom</name>

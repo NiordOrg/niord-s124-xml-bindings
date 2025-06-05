@@ -1,2 +1,4 @@
 jdk:
   - openjdk21
+install:
+  - mvn clean compile package install -DskipTests -Dmaven.javadoc.skip=true -X

@@ -66,9 +66,38 @@ After successful deployment, verify the packages are available:
 
 ## Using Released Packages
 
-The packages are available from two sources:
+The packages are available from three sources:
 
-### Option 1: GitHub Pages (No Authentication Required)
+### Option 1: JitPack (Recommended - No Authentication Required)
+
+JitPack automatically builds and publishes artifacts from GitHub releases.
+
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependencies>
+    <!-- S-100 XML Bindings -->
+    <dependency>
+        <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
+        <artifactId>s100-5_2_0-xml-bindings</artifactId>
+        <version>v0.0.5</version>
+    </dependency>
+    
+    <!-- S-124 XML Bindings -->
+    <dependency>
+        <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
+        <artifactId>s124-2_0_1-xml-bindings</artifactId>
+        <version>v0.0.5</version>
+    </dependency>
+</dependencies>
+```
+
+### Option 2: GitHub Pages (No Authentication Required)
 
 Add the following to your `pom.xml`:
 
@@ -79,9 +108,25 @@ Add the following to your `pom.xml`:
         <url>https://niordorg.github.io/niord-s124-xml-bindings/repository</url>
     </repository>
 </repositories>
+
+<dependencies>
+    <!-- S-100 XML Bindings -->
+    <dependency>
+        <groupId>dma.dk.niord.s100.xml-bindings</groupId>
+        <artifactId>s100-5_2_0-xml-bindings</artifactId>
+        <version>0.0.5</version>
+    </dependency>
+    
+    <!-- S-124 XML Bindings -->
+    <dependency>
+        <groupId>dma.dk.niord.s100.xml-bindings</groupId>
+        <artifactId>s124-2_0_1-xml-bindings</artifactId>
+        <version>0.0.5</version>
+    </dependency>
+</dependencies>
 ```
 
-### Option 2: GitHub Packages (Authentication Required)
+### Option 3: GitHub Packages (Authentication Required)
 
 ```xml
 <repositories>
@@ -90,6 +135,22 @@ Add the following to your `pom.xml`:
         <url>https://maven.pkg.github.com/NiordOrg/niord-s124-xml-bindings</url>
     </repository>
 </repositories>
+
+<dependencies>
+    <!-- S-100 XML Bindings -->
+    <dependency>
+        <groupId>dma.dk.niord.s100.xml-bindings</groupId>
+        <artifactId>s100-5_2_0-xml-bindings</artifactId>
+        <version>0.0.5</version>
+    </dependency>
+    
+    <!-- S-124 XML Bindings -->
+    <dependency>
+        <groupId>dma.dk.niord.s100.xml-bindings</groupId>
+        <artifactId>s124-2_0_1-xml-bindings</artifactId>
+        <version>0.0.5</version>
+    </dependency>
+</dependencies>
 ```
 
 For GitHub Packages, you need to authenticate. Add to your `~/.m2/settings.xml`:
@@ -107,26 +168,6 @@ For GitHub Packages, you need to authenticate. Add to your `~/.m2/settings.xml`:
 ```
 
 Create a GitHub Personal Access Token with `read:packages` scope at: https://github.com/settings/tokens
-
-### Dependencies
-
-```xml
-<dependencies>
-    <!-- S-100 XML Bindings -->
-    <dependency>
-        <groupId>dma.dk.niord.s100.xml-bindings</groupId>
-        <artifactId>s100-5_2_0-xml-bindings</artifactId>
-        <version>0.0.1</version>
-    </dependency>
-    
-    <!-- S-124 XML Bindings -->
-    <dependency>
-        <groupId>dma.dk.niord.s100.xml-bindings</groupId>
-        <artifactId>s124-2_0_1-xml-bindings</artifactId>
-        <version>0.0.1</version>
-    </dependency>
-</dependencies>
-```
 
 ## Manual Deployment
 
@@ -157,3 +198,33 @@ Ensure your `~/.m2/settings.xml` contains GitHub authentication as described abo
 - Verify the repository URL in consuming project
 - Check authentication in `settings.xml`
 - Ensure the package was successfully published
+
+### JitPack Build Issues
+
+JitPack requires specific configuration due to the complex JAXB generation:
+
+- The project uses a `jitpack.yml` file to specify Maven 3.6.3 (required for the compiler plugin)
+- JitPack builds may take several minutes due to JAXB code generation
+- Monitor build status at: https://jitpack.io/#NiordOrg/niord-s124-xml-bindings
+
+If JitPack builds fail:
+1. Check the build log at: https://jitpack.io/com/github/NiordOrg/niord-s124-xml-bindings/[VERSION]/build.log
+2. Verify the `jitpack.yml` configuration
+3. Ensure all required XSD files are present in the repository
+
+## JitPack Configuration
+
+The project includes a `jitpack.yml` file with the following configuration:
+
+```yaml
+jdk:
+  - openjdk21
+install:
+  - mvn wrapper:wrapper -Dmaven=3.6.3
+  - ./mvnw install -DskipTests
+```
+
+This ensures JitPack uses:
+- OpenJDK 21 (required for the project)
+- Maven 3.6.3 (required for the maven-compiler-plugin:3.13.0)
+- Skips tests during build (faster builds, JAXB generation is the main concern)

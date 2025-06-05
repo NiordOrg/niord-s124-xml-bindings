@@ -1,6 +1,30 @@
-# Project Overview
+# Niord S-124 XML Bindings
 
-This repository contains XML bindings for S-100 and S-124 for use in Niord and Baleen.
+This repository contains JAXB XML bindings for S-100 and S-124 maritime standards for use in Niord and Baleen projects.
+
+## Modules
+
+- **s-100**: XML bindings for S-100 5.2.0 Exchange Catalogue
+- **s-124**: XML bindings for S-124 2.0.0 (Navigational Warnings)
+
+## Quick Start
+
+Add to your `pom.xml`:
+
+```xml
+<repositories>
+    <repository>
+        <id>jitpack.io</id>
+        <url>https://jitpack.io</url>
+    </repository>
+</repositories>
+
+<dependency>
+    <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
+    <artifactId>s124-2_0_1-xml-bindings</artifactId>
+    <version>v0.0.5</version>
+</dependency>
+```
 
 
 # Release Process
@@ -10,8 +34,9 @@ This document describes the release process for the Niord S-124 XML Bindings pro
 ## Prerequisites
 
 - Write access to the repository
-- Maven 3.6.0 or higher
-- Java 21
+- Maven 3.6.3 or higher (required for maven-compiler-plugin:3.13.0)
+- Java 21 (required for the project compilation)
+- Git (for version control and tagging)
 
 ## Release Steps
 
@@ -23,26 +48,37 @@ Before releasing, ensure all POMs have the correct version number:
 - S-100 module: `/s-100/pom.xml`
 - S-124 module: `/s-124/pom.xml`
 
-All three should have matching versions (e.g., `0.0.1`).
+All three should have matching versions (e.g., `0.0.5`).
 
 ### 2. Commit Changes
 
 ```bash
 git add .
-git commit -m "Prepare release v0.0.1"
+git commit -m "Prepare release v0.0.5"
 git push origin main
 ```
 
 ### 3. Create and Push Tag
 
 ```bash
-git tag v0.0.1
-git push origin v0.0.1
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
-The tag format must be `v<version>` (e.g., `v0.0.1`, `v1.0.0`).
+The tag format must be `v<version>` (e.g., `v0.0.5`, `v1.0.0`).
 
-### 4. Automatic Deployment
+### 4. Verify JitPack Build
+
+After pushing the tag, JitPack will automatically build the artifacts. Monitor the build at:
+- https://jitpack.io/#NiordOrg/niord-s124-xml-bindings
+
+You can also test the new release using the `test-pom.xml`:
+```bash
+# Update test-pom.xml to use the new version, then test
+mvn -f test-pom.xml dependency:resolve
+```
+
+### 5. Automatic Deployment
 
 Once the tag is pushed, GitHub Actions will automatically:
 
@@ -54,7 +90,7 @@ Once the tag is pushed, GitHub Actions will automatically:
 
 Monitor the build status in the Actions tab of the GitHub repository.
 
-### 5. Verify Release
+### 6. Verify Release
 
 After successful deployment, verify the packages are available:
 
@@ -228,3 +264,27 @@ This ensures JitPack uses:
 - OpenJDK 21 (required for the project)
 - Maven 3.6.3 (required for the maven-compiler-plugin:3.13.0)
 - Skips tests during build (faster builds, JAXB generation is the main concern)
+
+## Testing Dependencies
+
+The repository includes a `test-pom.xml` file that can be used to test dependency resolution and verify that JitPack artifacts are available:
+
+```bash
+# Test if dependencies can be resolved
+mvn -f test-pom.xml dependency:resolve
+
+# Test compilation with dependencies
+mvn -f test-pom.xml compile
+```
+
+This test project:
+- Uses the same JitPack repository configuration as end users
+- Downloads and tests the latest artifacts
+- Verifies that the dependency resolution works correctly
+- Can be used to debug JitPack issues or test new releases
+
+The `test-pom.xml` is particularly useful when:
+- Debugging JitPack build issues
+- Verifying that new releases work correctly
+- Testing different dependency configurations
+- Providing examples for users

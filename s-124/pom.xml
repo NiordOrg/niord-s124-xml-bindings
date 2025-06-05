@@ -6,11 +6,11 @@
     <parent>
         <groupId>dma.dk.niord.s100.xml-bindings</groupId>
         <artifactId>xml-bindingings-root-pom</artifactId>
-        <version>0.0.2</version>
+        <version>0.0.3</version>
         <relativePath>..</relativePath>
     </parent>
     <artifactId>s124-2_0_1-xml-bindings</artifactId>
-    <version>0.0.2</version>
+    <version>0.0.3</version>
     <packaging>jar</packaging>
     <name>S-124 2.0.0 XML Bindings</name>
 
@@ -78,7 +78,7 @@
         <dependency>
             <groupId>dma.dk.niord.s100.xml-bindings</groupId>
             <artifactId>s100-5_2_0-xml-bindings</artifactId>
-            <version>0.0.2</version>
+            <version>0.0.3</version>
         </dependency>
 
     </dependencies>

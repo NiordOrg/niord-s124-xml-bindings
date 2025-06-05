@@ -23,31 +23,12 @@
     </repositories>
 
     <dependencies>
-        <!-- Test different dependency formats -->
         
-        <!-- Option 1: Using module directory name -->
-        <!--
+        <!-- Using actual Maven artifactId -->
         <dependency>
             <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
-            <artifactId>s-124</artifactId>
-            <version>v0.0.3</version>
-        </dependency>
-        -->
-        
-        <!-- Option 2: Using the root project (uncomment to test) -->
-        <!--
-        <dependency>
-            <groupId>com.github.NiordOrg</groupId>
-            <artifactId>niord-s124-xml-bindings</artifactId>
-            <version>v0.0.3</version>
-        </dependency>
-        -->
-        
-        <!-- Option 3: Using directory name as artifactId -->
-        <dependency>
-            <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
-            <artifactId>s-124</artifactId>
-            <version>v0.0.4</version>
+            <artifactId>s124-2_0_1-xml-bindings</artifactId>
+            <version>v0.0.5</version>
         </dependency>
     </dependencies>
 </project>

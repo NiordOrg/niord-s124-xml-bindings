@@ -18,7 +18,7 @@
     </globalBindings>
 
     <bindings
-            schemaLocation="../xsd/S124_v2.0.0-20241210.xsd"
+            schemaLocation="../xsd/124_2.0.0.xsd"
             node="/xs:schema" choiceContentProperty="true">
 
         <schemaBindings>

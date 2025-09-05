@@ -6,11 +6,11 @@
     <parent>
         <groupId>dma.dk.niord.s100.xml-bindings</groupId>
         <artifactId>xml-bindingings-root-pom</artifactId>
-        <version>0.0.5</version>
+        <version>0.0.6</version>
         <relativePath>..</relativePath>
     </parent>
     <artifactId>s124-2_0_1-xml-bindings</artifactId>
-    <version>0.0.5</version>
+    <version>0.0.6</version>
     <packaging>jar</packaging>
     <name>S-124 2.0.0 XML Bindings</name>
 
@@ -35,7 +35,7 @@
 
                     <schemaIncludes>
  <!-- Main S124 schema - this will pull in s100gmlbase and S100_gmlProfile via imports -->
-    <include>xsd/S124_v2.0.0-20241210.xsd</include>
+    <include>xsd/124_2.0.0.xsd</include>
 
     <!-- S100 Extension schema - this might also pull in s100gmlbase and S100_gmlProfile -->
     <include>xsd/s100gmlbaseExt.xsd</include>
@@ -78,7 +78,7 @@
         <dependency>
             <groupId>dma.dk.niord.s100.xml-bindings</groupId>
             <artifactId>s100-5_2_0-xml-bindings</artifactId>
-            <version>0.0.5</version>
+            <version>0.0.6</version>
         </dependency>
 
     </dependencies>

@@ -16,12 +16,8 @@
 
 package org.grad.eNav.s100.adapters;
 
-import static org.grad.eNav.s100.adapters.DateAdapter.S100_DATE_FORMAT;
-import static org.grad.eNav.s100.adapters.TimeAdapter.S100_TIME_FORMAT;
-
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeFormatterBuilder;
 
 import jakarta.xml.bind.annotation.adapters.XmlAdapter;
 
@@ -35,8 +31,8 @@ import jakarta.xml.bind.annotation.adapters.XmlAdapter;
 public class OffsetDateTimeAdapter extends XmlAdapter<String, OffsetDateTime> {
 
     // We should not support LocalDateTime
-    public static final DateTimeFormatter S100_DATE_TIME_FORMATTER = new DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern(S100_DATE_FORMAT)
-            .appendPattern("'T'").appendPattern(S100_TIME_FORMAT).optionalStart().appendOffset("+HHMM", "Z").parseStrict().toFormatter();
+    public static final DateTimeFormatter S100_DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss'Z'");
 
     /**
      * Marshall a Java Date object into an XML element.

@@ -1,4 +1,4 @@
-# Niord S-124 XML Bindings
+# Niord XML Bindings
 
 This repository contains JAXB XML bindings for S-100 and S-124 for use in Niord and Baleen projects.
 

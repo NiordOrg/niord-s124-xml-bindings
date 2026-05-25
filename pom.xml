@@ -6,7 +6,7 @@
 
     <groupId>dma.dk.niord.s100.xml-bindings</groupId>
     <artifactId>xml-bindingings-root-pom</artifactId>
-    <version>0.0.8</version>
+    <version>0.0.9</version>
     <packaging>pom</packaging>
 
     <name>XmlBindings-Root-Pom</name>
@@ -189,7 +189,7 @@
                 <artifactId>maven-release-plugin</artifactId>
                 <version>2.5.3</version>
                 <configuration>
-                    <tagNameFormat>v@{project.version}</tagNameFormat>
+                    <tagNameFormat>@{project.version}</tagNameFormat>
                     <autoVersionSubmodules>true</autoVersionSubmodules>
                     <releaseProfiles>releases</releaseProfiles>
                 </configuration>

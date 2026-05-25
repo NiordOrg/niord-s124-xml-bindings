@@ -3,7 +3,7 @@ name: Deploy to GitHub Pages Maven Repository
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
 
 jobs:
@@ -55,8 +55,7 @@ jobs:
 
     - name: Generate index.html for repository browsing
       run: |
-        # Extract version from tag (remove 'v' prefix)
-        VERSION=${GITHUB_REF_NAME#v}
+        VERSION=${GITHUB_REF_NAME}
 
         cat > gh-pages/index.html << EOF
         <!DOCTYPE html>
@@ -116,7 +115,7 @@ jobs:
         &lt;dependency&gt;
             &lt;groupId&gt;com.github.NiordOrg.niord-xml-bindings&lt;/groupId&gt;
             &lt;artifactId&gt;s124-2_0_1-xml-bindings&lt;/artifactId&gt;
-            &lt;version&gt;v${VERSION}&lt;/version&gt;
+            &lt;version&gt;${VERSION}&lt;/version&gt;
         &lt;/dependency&gt;</pre>
 
             <h2>Repository Structure</h2>

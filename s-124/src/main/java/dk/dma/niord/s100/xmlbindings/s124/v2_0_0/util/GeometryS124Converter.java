@@ -29,6 +29,8 @@ import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.PointTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.SurfacePropertyImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.SurfaceTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.AbstractRingPropertyType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.BoundingShapeType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.EnvelopeType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.LineStringSegmentType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.LinearRingType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory;
@@ -62,6 +64,33 @@ public final class GeometryS124Converter {
 
     public static List<S100SpatialAttributeType> geometryToS124PointCurveSurfaceGeometry(Geometry geometry) {
         return populatePointCurveSurfaceToGeometry(geometry, new ArrayList<>());
+    }
+
+    /**
+     * Convert a GML {@link BoundingShapeType} envelope (lat/lon ordered) to a JTS polygon
+     * (lon/lat ordered) in EPSG:4326. Returns {@code null} if the envelope is absent or
+     * malformed.
+     */
+    public static Geometry envelopeToJts(BoundingShapeType boundingShape) {
+        EnvelopeType env = Optional.ofNullable(boundingShape).map(BoundingShapeType::getEnvelope).orElse(null);
+        if (env == null || env.getLowerCorner() == null || env.getUpperCorner() == null) {
+            return null;
+        }
+        Double[] lower = env.getLowerCorner().getValue();
+        Double[] upper = env.getUpperCorner().getValue();
+        if (lower == null || upper == null || lower.length < 2 || upper.length < 2) {
+            return null;
+        }
+        double minLat = lower[0], minLon = lower[1];
+        double maxLat = upper[0], maxLon = upper[1];
+        GeometryFactory gf = new GeometryFactory(new PrecisionModel(), 4326);
+        return gf.createPolygon(new Coordinate[] {
+                new Coordinate(minLon, minLat),
+                new Coordinate(maxLon, minLat),
+                new Coordinate(maxLon, maxLat),
+                new Coordinate(minLon, maxLat),
+                new Coordinate(minLon, minLat),
+        });
     }
 
     public static Geometry pointCurveSurfaceToGeometry(List<S100SpatialAttributeType> properties) {

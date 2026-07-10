@@ -28,6 +28,7 @@ import org.grad.eNav.s100.utils.S100ExchangeCatalogueBuilder;
 import org.grad.eNav.s100.utils.S100ExchangeSetUtils;
 import org.locationtech.jts.geom.Geometry;
 
+import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100EncodingFormat;
 import dk.dma.niord.s100.catalog._5_2.S100NavigationPurpose;
 import dk.dma.niord.s100.catalog._5_2.S100ProductSpecification;
@@ -67,6 +68,14 @@ import jakarta.xml.bind.JAXBException;
  *  ├── CATALOG.XML
  *  └── CATALOG.SIGN
  * </pre>
+ *
+ * <p>In addition to datasets (written as files and listed in the catalogue with
+ * {@code purpose=newDataset}), the exchange set may carry <em>fileless</em> cancellations
+ * via {@link Builder#cancellations(List)}. Per S-100 Ed 5.x Part 17, clause 17-4.4.1, a
+ * fileless cancellation is a dataset discovery-metadata entry with {@code purpose=cancellation}
+ * that reproduces the cancelled dataset's file name, its <em>original</em> digital signature
+ * and all other mandatory metadata, but ships no dataset file. Consumers use it to remove the
+ * referenced dataset. See {@link Cancellation}.</p>
  */
 public final class S124ExchangeSetFactory {
 
@@ -198,6 +207,44 @@ public final class S124ExchangeSetFactory {
                     .build(df.bytes));
         }
 
+        // Fileless cancellations (S-100 Part 17, clause 17-4.4.1): a discovery-metadata entry
+        // with purpose=cancellation that reuses the cancelled dataset's file name, original
+        // digital signature and mandatory metadata, but WITHOUT shipping a dataset file. The
+        // build(null) call reuses the supplied original signature instead of signing a payload.
+        for (Cancellation cancellation : cfg.cancellations) {
+            S100SEDigitalSignatureReference signatureReference =
+                    Optional.ofNullable(cancellation.signatureReference()).orElse(cfg.signatureAlgorithm);
+            catBuilder.addDatasetMetadata(builder -> builder
+                    .setFileName("file:/" + cancellation.fileName())
+                    .setDatasetID(cancellation.datasetId())
+                    .setCompressionFlag(false)
+                    .setDataProtection(false)
+                    .setProtectionScheme(S100ProtectionScheme.S_100_P_15)
+                    .setCopyright(true)
+                    .setClassification(cfg.classification)
+                    .setPurpose(S100Purpose.CANCELLATION)
+                    .setNotForNavigation(cfg.notForNavigation)
+                    .setSpecificUsage(cfg.specificUsage)
+                    .setEditionNumber(cancellation.editionNumber())
+                    .setUpdateNumber(cancellation.updateNumber())
+                    .setIssueDate(cancellation.issueDate())
+                    .setBoundingBox(cancellation.boundingBox())
+                    .setProductSpecification(cfg.productSpecification)
+                    .setProducingAgency(cfg.organization)
+                    .setProducingAgencyRole(cfg.producingAgencyRole)
+                    .setProducerCode(cfg.producerCode)
+                    .setEncodingFormat(S100EncodingFormat.GML)
+                    .setDataCoverages(cancellation.boundingBox())
+                    .setComment(cfg.datasetComment)
+                    .setMetadataDateStamp(LocalDate.now())
+                    .setReplacedData(false)
+                    .setNavigationPurposes(Collections.singletonList(S100NavigationPurpose.OVERVIEW))
+                    .setMaintenanceFrequency(cfg.maintenanceFrequency)
+                    .setDigitalSignatureReference(signatureReference)
+                    .setDigitalSignatureValues(cancellation.signatureValues())
+                    .build(null));
+        }
+
         try {
             return S100ExchangeSetUtils.marshalS100ExchangeSetCatalogue(catBuilder.build());
         } catch (java.security.cert.CertificateEncodingException e) {
@@ -229,9 +276,55 @@ public final class S124ExchangeSetFactory {
 
     private record DatasetFile(String fileName, byte[] bytes, Dataset dataset, String uuid) {}
 
+    /**
+     * A fileless dataset cancellation, per S-100 Ed 5.x Part 17, clause 17-4.4.1.
+     *
+     * <p>The cancelled dataset's file is <em>not</em> shipped in the exchange set; instead the
+     * catalogue carries a discovery-metadata entry with {@code purpose=cancellation} that
+     * reproduces the cancelled dataset's identifying metadata and reuses its <em>original</em>
+     * digital signature, so a consumer can match and remove exactly the dataset it received.</p>
+     *
+     * @param fileName          the cancelled dataset's file name (without the {@code file:/} prefix,
+     *                          which the factory adds); required
+     * @param datasetId         the cancelled dataset's identifier (MRN); may be {@code null}
+     * @param editionNumber     the cancelled dataset's edition number
+     * @param updateNumber      the cancelled dataset's update number
+     * @param issueDate         the issue date recorded in the entry; required. Note S-100 5.2.0
+     *                          clause 17-4.4.1 literally requires "all other mandatory metadata
+     *                          fields also set to the same values as the original" (i.e. the
+     *                          original issue date); a per-cancellation issue date is under
+     *                          WENDWG clarification (TSM10-7.3a), so the caller decides which to pass
+     * @param boundingBox       the cancelled dataset's bounding box; may be {@code null}
+     * @param signatureReference the algorithm of the original signature; {@code null} falls back to
+     *                          the exchange set's {@code signatureAlgorithm}
+     * @param signatureValues   the cancelled dataset's <em>original</em> digital signature value(s);
+     *                          required and non-empty (the catalogue schema mandates at least one)
+     */
+    public record Cancellation(
+            String fileName,
+            String datasetId,
+            BigInteger editionNumber,
+            BigInteger updateNumber,
+            LocalDate issueDate,
+            Geometry boundingBox,
+            S100SEDigitalSignatureReference signatureReference,
+            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatureValues) {
+
+        public Cancellation {
+            Objects.requireNonNull(fileName, "cancellation fileName must be set");
+            Objects.requireNonNull(issueDate, "cancellation issueDate must be set");
+            if (signatureValues == null || signatureValues.isEmpty()) {
+                throw new IllegalArgumentException("cancellation must carry the original dataset's "
+                        + "digital signature (S-100 Part 17 clause 17-4.4.1: a fileless cancellation "
+                        + "reuses the original signature)");
+            }
+        }
+    }
+
     /** Fluent builder for {@link S124ExchangeSetFactory}. */
     public static final class Builder {
-        private List<Dataset> datasets;
+        private List<Dataset> datasets = Collections.emptyList();
+        private List<Cancellation> cancellations = Collections.emptyList();
         private String organization;
         private String producerCode;
         private String certificatePem;
@@ -262,6 +355,8 @@ public final class S124ExchangeSetFactory {
         private Builder() {}
 
         public Builder datasets(List<Dataset> datasets) { this.datasets = datasets; return this; }
+        /** Fileless dataset cancellations (S-100 Part 17, clause 17-4.4.1); see {@link Cancellation}. */
+        public Builder cancellations(List<Cancellation> cancellations) { this.cancellations = cancellations; return this; }
         public Builder organization(String organization) { this.organization = organization; return this; }
         public Builder producerCode(String producerCode) { this.producerCode = producerCode; return this; }
         public Builder certificatePem(String certificatePem) { this.certificatePem = certificatePem; return this; }
@@ -290,8 +385,9 @@ public final class S124ExchangeSetFactory {
 
         public S124ExchangeSetFactory build() {
             Objects.requireNonNull(datasets, "datasets must be set");
-            if (datasets.isEmpty()) {
-                throw new IllegalArgumentException("datasets must not be empty");
+            Objects.requireNonNull(cancellations, "cancellations must be set");
+            if (datasets.isEmpty() && cancellations.isEmpty()) {
+                throw new IllegalArgumentException("at least one dataset or cancellation must be provided");
             }
             Objects.requireNonNull(organization, "organization must be set");
             Objects.requireNonNull(producerCode, "producerCode must be set");

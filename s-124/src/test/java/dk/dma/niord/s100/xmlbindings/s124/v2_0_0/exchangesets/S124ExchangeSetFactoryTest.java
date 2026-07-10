@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
+import dk.dma.niord.s100.catalog._5_2.S100Purpose;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.DataSetIdentificationTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.BoundingShapeTypeImpl;
@@ -126,6 +127,153 @@ class S124ExchangeSetFactoryTest {
         assertThatThrownBy(b::build)
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("signer");
+    }
+
+    @Test
+    void emitsFilelessCancellationReusingOriginalSignature() throws Exception {
+        // 1. Build an "original" exchange set for a dataset and read back its discovery metadata.
+        Dataset original = newDataset("DK.S124.cancel-me");
+        byte[] originalZip = S124ExchangeSetFactory.builder()
+                .datasets(List.of(original))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .build()
+                .toBytes();
+
+        S100DatasetDiscoveryMetadata originalMeta = catalogueOf(originalZip)
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+        assertThat(originalMeta.getPurpose()).isEqualTo(S100Purpose.NEW_DATASET);
+
+        // 2. Cancel it: reuse the original file name and signature, but ship no file.
+        String originalFileName = originalMeta.getFileName().substring("file:/".length());
+        S124ExchangeSetFactory.Cancellation cancellation = new S124ExchangeSetFactory.Cancellation(
+                originalFileName,
+                originalMeta.getDatasetID(),
+                originalMeta.getEditionNumber(),
+                originalMeta.getUpdateNumber(),
+                originalMeta.getIssueDate(),
+                null,
+                originalMeta.getDigitalSignatureReference().getValue(),
+                originalMeta.getDigitalSignatureValues());
+
+        Dataset stillActive = newDataset("DK.S124.still-active");
+        AtomicInteger signCalls = new AtomicInteger();
+        byte[] zip = S124ExchangeSetFactory.builder()
+                .datasets(List.of(stillActive))
+                .cancellations(List.of(cancellation))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> { signCalls.incrementAndGet(); return new byte[64]; })
+                .build()
+                .toBytes();
+
+        Map<String, byte[]> entries = unzip(zip);
+
+        // Fileless: only the still-active dataset yields a DATASET_FILES entry — the cancellation does not.
+        assertThat(datasetFileCount(entries)).isEqualTo(1);
+
+        // Signer runs once for the active dataset file + once for CATALOG.XML — NOT for the
+        // cancellation, which reuses the supplied original signature.
+        assertThat(signCalls.get()).isEqualTo(2);
+
+        List<S100DatasetDiscoveryMetadata> meta = catalogueOf(zip)
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas();
+        assertThat(meta).hasSize(2);
+
+        S100DatasetDiscoveryMetadata cancelEntry = meta.stream()
+                .filter(m -> m.getPurpose() == S100Purpose.CANCELLATION)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no cancellation entry in catalogue"));
+        assertThat(cancelEntry.getFileName()).isEqualTo("file:/" + originalFileName);
+        assertThat(cancelEntry.getDatasetID()).isEqualTo(originalMeta.getDatasetID());
+        assertThat(cancelEntry.getEditionNumber()).isEqualTo(originalMeta.getEditionNumber());
+        assertThat(cancelEntry.getUpdateNumber()).isEqualTo(originalMeta.getUpdateNumber());
+        // At least one digital signature is present (the catalogue schema mandates it) and it is the reused one.
+        assertThat(cancelEntry.getDigitalSignatureValues()).hasSize(1);
+
+        // The other entry is the still-active dataset, marked newDataset.
+        assertThat(meta.stream().filter(m -> m.getPurpose() == S100Purpose.NEW_DATASET).count()).isEqualTo(1);
+    }
+
+    @Test
+    void buildsCancellationOnlyExchangeSet() throws Exception {
+        S124ExchangeSetFactory.Cancellation cancellation = cancellationOf(newDataset("DK.S124.seed"));
+
+        byte[] zip = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(cancellation)) // no datasets at all
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .build()
+                .toBytes();
+
+        Map<String, byte[]> entries = unzip(zip);
+        assertThat(datasetFileCount(entries)).isZero();
+
+        List<S100DatasetDiscoveryMetadata> meta = catalogueOf(zip)
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas();
+        assertThat(meta).hasSize(1);
+        assertThat(meta.get(0).getPurpose()).isEqualTo(S100Purpose.CANCELLATION);
+    }
+
+    @Test
+    void cancellationRequiresOriginalSignature() {
+        assertThatThrownBy(() -> new S124ExchangeSetFactory.Cancellation(
+                "124DK00x-0.XML", "urn:mrn:iho:s124:dk:1", BigInteger.ONE, BigInteger.ZERO,
+                LocalDate.of(2026, 1, 15), null, null, List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("original");
+    }
+
+    @Test
+    void buildRequiresAtLeastOneDatasetOrCancellation() {
+        S124ExchangeSetFactory.Builder b = S124ExchangeSetFactory.builder()
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64]);
+
+        assertThatThrownBy(b::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least one dataset or cancellation");
+    }
+
+    /** Builds a real exchange set for the given dataset and derives a fileless {@link S124ExchangeSetFactory.Cancellation} of it. */
+    private static S124ExchangeSetFactory.Cancellation cancellationOf(Dataset dataset) throws Exception {
+        byte[] zip = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .build()
+                .toBytes();
+        S100DatasetDiscoveryMetadata m = catalogueOf(zip)
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+        return new S124ExchangeSetFactory.Cancellation(
+                m.getFileName().substring("file:/".length()),
+                m.getDatasetID(),
+                m.getEditionNumber(),
+                m.getUpdateNumber(),
+                m.getIssueDate(),
+                null,
+                m.getDigitalSignatureReference().getValue(),
+                m.getDigitalSignatureValues());
+    }
+
+    private static S100ExchangeCatalogue catalogueOf(byte[] zipBytes) throws Exception {
+        String catalogXml = new String(unzip(zipBytes).get("S_100/CATALOG.XML"), StandardCharsets.UTF_8);
+        return S100ExchangeSetUtils.unmarshallS100ExchangeSetCatalogue(catalogXml);
+    }
+
+    private static long datasetFileCount(Map<String, byte[]> entries) {
+        return entries.keySet().stream()
+                .filter(n -> n.startsWith("S_100/S-124/DATASET_FILES/") && n.endsWith(".XML"))
+                .count();
     }
 
     private static Dataset newDataset(String id) {

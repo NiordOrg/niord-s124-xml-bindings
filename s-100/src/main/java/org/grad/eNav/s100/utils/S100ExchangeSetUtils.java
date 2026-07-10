@@ -57,16 +57,20 @@ import java.util.stream.Collectors;
 public class S100ExchangeSetUtils {
 
     /**
-     * The Language Code namespace/list for use in the language codes.
+     * The Language Code namespace/list for use in the language codes. The
+     * codeList attribute is required by the ISO 19115-3 CodeListValueType, so
+     * it must not be null.
      */
     public static final String LANGUAGE_NAMESPACE = "ISO 639-2/T";
-    public static final String LANGUAGE_LIST = null;
+    public static final String LANGUAGE_LIST = "https://standards.iso.org/iso/19115/resources/Codelists/cat/codelists.xml";
 
     /**
-     * The Country Code namespace/list for use in the country codes.
+     * The Country Code namespace/list for use in the country codes. The
+     * codeList attribute is required by the ISO 19115-3 CodeListValueType, so
+     * it must not be null.
      */
     public static final String COUNTRY_NAMESPACE = "ISO 3166-2";
-    public static final String COUNTRY_LIST = null;
+    public static final String COUNTRY_LIST = "https://standards.iso.org/iso/19115/resources/Codelists/cat/codelists.xml";
 
     /**
      * The Character Set Encoding namespace/list for use in the character set encoding codes.
@@ -78,11 +82,19 @@ public class S100ExchangeSetUtils {
     /**
      * A helper function to easily generate character string property types
      * that are used by the ISO standards.
+     * <p/>
+     * For null inputs this function returns null, so that optional elements
+     * are omitted entirely; a JAXBElement wrapping a null value would be
+     * marshalled as {@code xsi:nil="true"}, which the non-nillable
+     * gco:CharacterString element does not allow.
      *
      * @param characterString The string to be transformed into a character string property type
      * @return The character string property type
      */
     public static CharacterStringPropertyType createCharacterStringPropertyType(String characterString) {
+        if(Objects.isNull(characterString)) {
+            return null;
+        }
         final ObjectFactory objectFactory = new ObjectFactory();
         final CharacterStringPropertyType cspt = new CharacterStringPropertyType();
         cspt.setCharacterString(objectFactory.createCharacterString(characterString));
@@ -91,7 +103,7 @@ public class S100ExchangeSetUtils {
 
     /**
      * A helper function to easily generate a list of character string property
-     * types that are used by the ISO standards.
+     * types that are used by the ISO standards. Null entries are skipped.
      *
      * @param characterStringList  The list of string to be transformed into a list of character string property type
      * @return The list of character string property type
@@ -100,6 +112,7 @@ public class S100ExchangeSetUtils {
         return Optional.ofNullable(characterStringList)
                 .orElseGet(Collections::emptyList)
                 .stream()
+                .filter(Objects::nonNull)
                 .map(S100ExchangeSetUtils::createCharacterStringPropertyType)
                 .toList();
     }
@@ -254,12 +267,16 @@ public class S100ExchangeSetUtils {
                     .collect(Collectors.toList());
             segments.setAbstractCurveSegments(lineStringSegmentList);
             curveType.setSegments(segments);
-            curvePropertyType.setAbstractCurve(gmlObjectFactory.createAbstractCurve(curveType));
+            // use the concrete gml:Curve/gml:Ring elements - the substitution
+            // group heads gml:AbstractCurve/gml:AbstractRing are abstract and
+            // may not appear in instance documents
+            curvePropertyType.setAbstractCurve(gmlObjectFactory.createCurve(curveType));
             ringType.setCurveMembers(Collections.singletonList(curvePropertyType));
             ringType.setAggregationType(AggregationType.SEQUENCE);
-            abstractRingPropertyType.setAbstractRing(gmlObjectFactory.createAbstractRing(ringType));
+            abstractRingPropertyType.setAbstractRing(gmlObjectFactory.createRing(ringType));
             polygonType.setExterior(abstractRingPropertyType);
-            polygonType.setSrsDimension(BigInteger.valueOf(geometry.getSRID()));
+            // srsDimension is the coordinate dimension (lat/lon), not the SRID
+            polygonType.setSrsDimension(BigInteger.TWO);
             gmObjectPropertyType.setAbstractGeometry(new net.opengis.gml._3.ObjectFactory().createPolygon(polygonType));
             boundingPolygonType.setPolygons(Collections.singletonList(gmObjectPropertyType));
             dataCoverage.setBoundingPolygon(boundingPolygonType);

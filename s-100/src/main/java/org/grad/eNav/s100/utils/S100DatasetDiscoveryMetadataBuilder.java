@@ -564,8 +564,19 @@ public class S100DatasetDiscoveryMetadataBuilder {
             final DatePropertyType datePropertyType = new DatePropertyType();
             datePropertyType.setDate(this.maintenanceDate);
             ciDateType.setDate(datePropertyType);
+            // the dateType child is mandatory for cit:CI_Date
+            final CIDateTypeCodePropertyType ciDateTypeCodePropertyType = new CIDateTypeCodePropertyType();
+            ciDateTypeCodePropertyType.setCIDateTypeCode(S100ExchangeSetUtils.createCodeListValueType(
+                    "https://standards.iso.org/iso/19115/resources/Codelists/cat/codelists.xml",
+                    null,
+                    "nextUpdate",
+                    "nextUpdate"));
+            ciDateType.setDateType(ciDateTypeCodePropertyType);
+            // use the concrete cit:CI_Date element - the substitution group
+            // head mcc:Abstract_TypedDate is abstract and may not appear in
+            // instance documents
             abstractTypedDatePropertyType.setAbstractTypedDate(
-                    new org.iso.standards.iso._19115.__3.mcc._1.ObjectFactory().createAbstractTypedDate(ciDateType)
+                    this.citObjectFactory.createCIDate(ciDateType)
             );
             mdMaintenanceInformationType.setMaintenanceDates(Collections.singletonList(abstractTypedDatePropertyType));
         }

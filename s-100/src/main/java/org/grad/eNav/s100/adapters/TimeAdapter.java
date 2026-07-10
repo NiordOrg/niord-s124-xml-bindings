@@ -21,12 +21,18 @@ import jakarta.xml.bind.annotation.adapters.XmlAdapter;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 
 /**
  * The Time Adapter Class.
  *
  * This is used to translate between the java.time.LocalTime objects and the XML
  * time elements.
+ * <p/>
+ * Times are marshalled in the extended ISO-8601 form ({@code 09:30:00})
+ * required by the {@code xs:time} lexical space (seconds included). The basic
+ * form ({@code 093000}) produced by earlier versions of these bindings is
+ * still accepted when unmarshalling.
  *
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
@@ -39,6 +45,10 @@ public class TimeAdapter extends XmlAdapter<String, LocalTime> {
             .parseStrict()
             .toFormatter();
 
+    // xs:time requires the seconds field, which DateTimeFormatter.ISO_LOCAL_TIME
+    // omits for whole-minute values
+    private static final DateTimeFormatter XSD_TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
+
     /**
      * Marshall a Java Date object into an XML element.
      *
@@ -47,9 +57,7 @@ public class TimeAdapter extends XmlAdapter<String, LocalTime> {
      */
     @Override
     public String marshal(LocalTime date) {
-        synchronized (S100_TIME_FORMATTER) {
-            return S100_TIME_FORMATTER.format(date);
-        }
+        return XSD_TIME_FORMATTER.format(date);
     }
 
     /**
@@ -60,8 +68,15 @@ public class TimeAdapter extends XmlAdapter<String, LocalTime> {
      */
     @Override
     public LocalTime unmarshal(String xml) {
-        synchronized (S100_TIME_FORMATTER) {
-            return LocalTime.parse(xml, S100_TIME_FORMATTER);
+        try {
+            // ISO_TIME also tolerates fractional seconds and an optional zone
+            // offset, as xs:time does
+            return LocalTime.parse(xml, DateTimeFormatter.ISO_TIME);
+        } catch (DateTimeParseException e) {
+            // fall back to the legacy basic form
+            synchronized (S100_TIME_FORMATTER) {
+                return LocalTime.parse(xml, S100_TIME_FORMATTER);
+            }
         }
     }
 

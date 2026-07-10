@@ -5,9 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.StringReader;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,9 +19,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
+import javax.xml.XMLConstants;
+import javax.xml.transform.stream.StreamSource;
+import javax.xml.validation.SchemaFactory;
+import javax.xml.validation.Validator;
+
 import org.grad.eNav.s100.utils.S100ExchangeSetUtils;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXParseException;
 
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
@@ -94,6 +105,136 @@ class S124ExchangeSetFactoryTest {
         S100SECertificateContainerType certContainer = catalogue.getCertificates().get(0);
         assertThat(certContainer.getCertificates()).hasSize(1);
         assertThat(certContainer.getCertificates().get(0).getId()).isEqualTo("cer1");
+    }
+
+    /**
+     * The generated CATALOG.XML must validate against the S-100 5.2.0 exchange
+     * catalogue XSD. Guards against regressions of the basic-form ISO dates,
+     * empty gco:CharacterStrings, missing codeList attributes and abstract
+     * gml:AbstractRing elements that used to make every catalogue schema-invalid.
+     */
+    @Test
+    void catalogueIsSchemaValid() throws Exception {
+        Dataset dataset = newDataset("DK.S124.xsd-validity");
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .emails(List.of("nautinf@dma.dk"))
+                .phone("+4572196000")
+                .city("Korsoer")
+                .postalCode("4220")
+                .country("Denmark")
+                .build()
+                .toBytes();
+
+        String catalogXml = new String(unzip(zipBytes).get("S_100/CATALOG.XML"), StandardCharsets.UTF_8);
+
+        assertThat(validateAgainstCatalogueSchema(catalogXml))
+                .as("XSD validation errors in CATALOG.XML:\n%s", catalogXml)
+                .isEmpty();
+    }
+
+    /**
+     * A catalogue built from the bare mandatory factory configuration (no phone,
+     * address, emails or dataset abstract) must be schema-valid too: absent
+     * optional details must be omitted rather than emitted as empty elements.
+     */
+    @Test
+    void catalogueWithMinimalContactDetailsIsSchemaValid() throws Exception {
+        Dataset dataset = newDataset("DK.S124.xsd-validity-minimal");
+        dataset.getDatasetIdentificationInformation().setDatasetAbstract(null);
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .build()
+                .toBytes();
+
+        String catalogXml = new String(unzip(zipBytes).get("S_100/CATALOG.XML"), StandardCharsets.UTF_8);
+
+        assertThat(validateAgainstCatalogueSchema(catalogXml))
+                .as("XSD validation errors in CATALOG.XML:\n%s", catalogXml)
+                .isEmpty();
+    }
+
+    /**
+     * A catalogue that carries a fileless cancellation entry alongside an
+     * active dataset must be schema-valid as well.
+     */
+    @Test
+    void catalogueWithCancellationIsSchemaValid() throws Exception {
+        S124ExchangeSetFactory.Cancellation cancellation =
+                cancellationOf(newDataset("DK.S124.xsd-validity-cancelled"));
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.xsd-validity-active")))
+                .cancellations(List.of(cancellation))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .build()
+                .toBytes();
+
+        String catalogXml = new String(unzip(zipBytes).get("S_100/CATALOG.XML"), StandardCharsets.UTF_8);
+
+        assertThat(validateAgainstCatalogueSchema(catalogXml))
+                .as("XSD validation errors in CATALOG.XML:\n%s", catalogXml)
+                .isEmpty();
+    }
+
+    /**
+     * Validates against the exchange catalogue XSD in the sibling s-100 module.
+     * Loading the schema from the filesystem lets its relative ISO 19115-3
+     * imports resolve naturally; the GML/xlink imports resolve over the network,
+     * exactly as the xjc code generation for these modules already does.
+     */
+    private static List<String> validateAgainstCatalogueSchema(String xml) throws Exception {
+        List<String> errors = new ArrayList<>();
+        Validator validator = CatalogueSchemaHolder.SCHEMA.newValidator();
+        validator.setErrorHandler(new ErrorHandler() {
+            @Override
+            public void warning(SAXParseException e) {
+            }
+
+            @Override
+            public void error(SAXParseException e) {
+                errors.add("line " + e.getLineNumber() + ": " + e.getMessage());
+            }
+
+            @Override
+            public void fatalError(SAXParseException e) {
+                errors.add("fatal, line " + e.getLineNumber() + ": " + e.getMessage());
+            }
+        });
+        validator.validate(new StreamSource(new StringReader(xml)));
+        return errors;
+    }
+
+    /** Lazily compiles the exchange catalogue schema once for all tests. */
+    private static final class CatalogueSchemaHolder {
+        static final javax.xml.validation.Schema SCHEMA;
+        static {
+            Path schemaPath = Path.of("../s-100/src/main/resources/xsd/S100Catalog/20240415/S100_ExchangeCatalogue.xsd");
+            if (!Files.exists(schemaPath)) {
+                // running with the repository root as working directory (e.g. from an IDE)
+                schemaPath = Path.of("s-100/src/main/resources/xsd/S100Catalog/20240415/S100_ExchangeCatalogue.xsd");
+            }
+            assertThat(schemaPath).as("exchange catalogue schema must be present").exists();
+            try {
+                SCHEMA = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
+                        .newSchema(schemaPath.toFile());
+            } catch (org.xml.sax.SAXException e) {
+                throw new ExceptionInInitializerError(e);
+            }
+        }
     }
 
     @Test

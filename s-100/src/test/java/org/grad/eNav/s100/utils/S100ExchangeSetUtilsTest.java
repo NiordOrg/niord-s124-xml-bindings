@@ -162,7 +162,9 @@ class S100ExchangeSetUtilsTest {
                         .setUpdateApplicationDate(LocalDate.parse("2023-01-01", this.dateFormat))
                         .setIssueDate(LocalDate.parse("2023-01-02", this.dateFormat))
                         .setIssueTime(LocalTime.parse("00:00:00", this.timeFormat))
-                        .setProductSpecification(null)
+                        // the dataset discovery metadata product specification is
+                        // mandatory (minOccurs=1) in the exchange catalogue schema
+                        .setProductSpecification(s100ProductSpecification)
                         .setProducingAgency("producingAgency")
                         .setProducingAgencyRole(RoleCode.ORIGINATOR)
                         .setProducerCode("producerCode")
@@ -195,16 +197,16 @@ class S100ExchangeSetUtilsTest {
 
     /**
      * Test that for a null string the CharacterStringPropertyType generation
-     * method will return an empty but valid object.
+     * method will return null, so that the enclosing optional element is
+     * omitted instead of being marshalled as a nil (schema-invalid)
+     * gco:CharacterString.
      */
     @Test
     void testCreateCharacterStringNull() {
         final CharacterStringPropertyType cspt = S100ExchangeSetUtils.createCharacterStringPropertyType(null);
 
-        // Assert that the CharacterStringPropertyType is not empty and seems valid
-        assertNotNull(cspt);
-        assertNotNull(cspt.getCharacterString());
-        assertNull(cspt.getCharacterString().getValue());
+        // Assert that no CharacterStringPropertyType was generated
+        assertNull(cspt);
     }
 
     /**
@@ -458,6 +460,45 @@ class S100ExchangeSetUtilsTest {
         } finally {
             Locale.setDefault(l);
         }
+    }
+
+    /**
+     * Test that the marshalled exchange set catalogue validates against the
+     * S-100 5.2.0 exchange catalogue schema. The schema is loaded from the
+     * filesystem so that its relative ISO 19115-3 imports resolve naturally;
+     * the GML/xlink imports resolve over the network, exactly as the xjc code
+     * generation for this module already does.
+     */
+    @Test
+    void testMarshalledCatalogueIsSchemaValid() throws Exception {
+        final String xml = S100ExchangeSetUtils.marshalS100ExchangeSetCatalogue(this.s100ExchangeCatalogue);
+
+        java.nio.file.Path schemaPath = java.nio.file.Path.of("src/main/resources/xsd/S100Catalog/20240415/S100_ExchangeCatalogue.xsd");
+        if (!java.nio.file.Files.exists(schemaPath)) {
+            // running with the repository root as working directory (e.g. from an IDE)
+            schemaPath = java.nio.file.Path.of("s-100/src/main/resources/xsd/S100Catalog/20240415/S100_ExchangeCatalogue.xsd");
+        }
+        assertTrue(java.nio.file.Files.exists(schemaPath), "exchange catalogue schema must be present");
+
+        final javax.xml.validation.Validator validator = javax.xml.validation.SchemaFactory
+                .newInstance(javax.xml.XMLConstants.W3C_XML_SCHEMA_NS_URI)
+                .newSchema(schemaPath.toFile())
+                .newValidator();
+        final List<String> errors = new java.util.ArrayList<>();
+        validator.setErrorHandler(new org.xml.sax.helpers.DefaultHandler() {
+            @Override
+            public void error(org.xml.sax.SAXParseException e) {
+                errors.add("line " + e.getLineNumber() + ": " + e.getMessage());
+            }
+
+            @Override
+            public void fatalError(org.xml.sax.SAXParseException e) {
+                errors.add("fatal, line " + e.getLineNumber() + ": " + e.getMessage());
+            }
+        });
+        validator.validate(new javax.xml.transform.stream.StreamSource(new java.io.StringReader(xml)));
+
+        assertEquals(Collections.emptyList(), errors);
     }
 
     /**

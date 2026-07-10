@@ -21,6 +21,7 @@ import jakarta.xml.bind.annotation.adapters.XmlAdapter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 
 import static org.grad.eNav.s100.adapters.DateAdapter.S100_DATE_FORMAT;
 import static org.grad.eNav.s100.adapters.TimeAdapter.S100_TIME_FORMAT;
@@ -30,6 +31,12 @@ import static org.grad.eNav.s100.adapters.TimeAdapter.S100_TIME_FORMAT;
  * <p/>
  * This is used to translate between the Java util.Date objects and the XML
  * dateTime elements.
+ * <p/>
+ * Date-times are marshalled in the extended ISO-8601 form
+ * ({@code 2026-01-15T09:30:00}) required by the {@code xs:dateTime} lexical
+ * space (seconds included). The basic form ({@code 20260115T093000}, with an
+ * optional offset) produced by earlier versions of these bindings is still
+ * accepted when unmarshalling.
  *
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
@@ -46,6 +53,11 @@ public class DateTimeAdapter extends XmlAdapter<String, LocalDateTime> {
             .parseStrict()
             .toFormatter();
 
+    // xs:dateTime requires the seconds field, which
+    // DateTimeFormatter.ISO_LOCAL_DATE_TIME omits for whole-minute values
+    private static final DateTimeFormatter XSD_DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss");
+
     /**
      * Marshall a Java Date object into an XML element.
      *
@@ -54,9 +66,7 @@ public class DateTimeAdapter extends XmlAdapter<String, LocalDateTime> {
      */
     @Override
     public String marshal(LocalDateTime date) {
-        synchronized (S100_DATE_TIME_FORMATTER) {
-            return S100_DATE_TIME_FORMATTER.format(date);
-        }
+        return XSD_DATE_TIME_FORMATTER.format(date);
     }
 
     /**
@@ -67,8 +77,15 @@ public class DateTimeAdapter extends XmlAdapter<String, LocalDateTime> {
      */
     @Override
     public LocalDateTime unmarshal(String xml) {
-        synchronized (S100_DATE_TIME_FORMATTER) {
-            return LocalDateTime.parse(xml, S100_DATE_TIME_FORMATTER);
+        try {
+            // ISO_DATE_TIME also tolerates fractional seconds and an optional
+            // zone offset, as xs:dateTime does
+            return LocalDateTime.parse(xml, DateTimeFormatter.ISO_DATE_TIME);
+        } catch (DateTimeParseException e) {
+            // fall back to the legacy basic form
+            synchronized (S100_DATE_TIME_FORMATTER) {
+                return LocalDateTime.parse(xml, S100_DATE_TIME_FORMATTER);
+            }
         }
     }
 

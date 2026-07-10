@@ -364,15 +364,19 @@ public class S100ExchangeCatalogueBuilder {
         addressType.setCountry(S100ExchangeSetUtils.createCharacterStringPropertyType(this.country));
         cataloguePointOfContact.setAddress(addressType);
 
-        // Set the phone number
-        final S100PhoneType phoneType = new S100PhoneType();
-        phoneType.setNumber(S100ExchangeSetUtils.createCharacterStringPropertyType(this.phone));
-        final CITelephoneTypeCodePropertyType ciTelephoneTypeCodePropertyType = new CITelephoneTypeCodePropertyType();
-        ciTelephoneTypeCodePropertyType.setCITelephoneTypeCode(Optional.ofNullable(this.phoneType)
-                .map(CodeListValueTypeProvider::getCodeListValueType)
-                .orElse(null));
-        phoneType.setNumberType(ciTelephoneTypeCodePropertyType);
-        cataloguePointOfContact.setPhone(phoneType);
+        // Set the phone number, if one is provided - the phone element is
+        // optional but its number child is mandatory, so it can only be
+        // emitted alongside an actual number
+        if(Objects.nonNull(this.phone)) {
+            final S100PhoneType phoneType = new S100PhoneType();
+            phoneType.setNumber(S100ExchangeSetUtils.createCharacterStringPropertyType(this.phone));
+            final CITelephoneTypeCodePropertyType ciTelephoneTypeCodePropertyType = new CITelephoneTypeCodePropertyType();
+            ciTelephoneTypeCodePropertyType.setCITelephoneTypeCode(Optional.ofNullable(this.phoneType)
+                    .map(CodeListValueTypeProvider::getCodeListValueType)
+                    .orElse(null));
+            phoneType.setNumberType(ciTelephoneTypeCodePropertyType);
+            cataloguePointOfContact.setPhone(phoneType);
+        }
 
         // And set the point of content information
         exchangeCatalogue.setContact(cataloguePointOfContact);

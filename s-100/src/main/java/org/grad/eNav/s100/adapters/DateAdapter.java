@@ -21,12 +21,18 @@ import jakarta.xml.bind.annotation.adapters.XmlAdapter;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 
 /**
  * The Date Adapter Class.
  * <p/>
  * This is used to translate between the Java util.Date objects and the XML
  * date elements.
+ * <p/>
+ * Dates are marshalled in the extended ISO-8601 form ({@code 2026-01-15})
+ * required by the {@code xs:date} lexical space. The basic form
+ * ({@code 20260115}) produced by earlier versions of these bindings is still
+ * accepted when unmarshalling.
  *
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
@@ -47,9 +53,7 @@ public class DateAdapter extends XmlAdapter<String, LocalDate> {
      */
     @Override
     public String marshal(LocalDate date) {
-        synchronized (S100_DATE_FORMATTER) {
-            return S100_DATE_FORMATTER.format(date);
-        }
+        return DateTimeFormatter.ISO_LOCAL_DATE.format(date);
     }
 
     /**
@@ -60,8 +64,14 @@ public class DateAdapter extends XmlAdapter<String, LocalDate> {
      */
     @Override
     public LocalDate unmarshal(String xml) {
-        synchronized (S100_DATE_FORMATTER) {
-            return LocalDate.parse(xml, S100_DATE_FORMATTER);
+        try {
+            // ISO_DATE also tolerates an optional zone offset, as xs:date does
+            return LocalDate.parse(xml, DateTimeFormatter.ISO_DATE);
+        } catch (DateTimeParseException e) {
+            // fall back to the legacy basic form
+            synchronized (S100_DATE_FORMATTER) {
+                return LocalDate.parse(xml, S100_DATE_FORMATTER);
+            }
         }
     }
 

@@ -22,7 +22,7 @@ Add to your `pom.xml`:
 <dependency>
     <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
     <artifactId>s124-2_0_1-xml-bindings</artifactId>
-    <version>0.0.11</version>
+    <version>0.0.12</version>
 </dependency>
 ```
 
@@ -54,18 +54,18 @@ All three should have matching versions (e.g., `0.0.5`).
 
 ```bash
 git add .
-git commit -m "Prepare release 0.0.11"
+git commit -m "Prepare release 0.0.12"
 git push origin main
 ```
 
 ### 3. Create and Push Tag
 
 ```bash
-git tag 0.0.11
-git push origin 0.0.11
+git tag 0.0.12
+git push origin 0.0.12
 ```
 
-The tag format must match the project version exactly (e.g., `0.0.11`, `1.0.0`).
+The tag format must match the project version exactly (e.g., `0.0.12`, `1.0.0`).
 
 ### 4. Verify JitPack Build
 
@@ -99,14 +99,14 @@ Add to your `pom.xml`:
     <dependency>
         <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
         <artifactId>s100-5_2_0-xml-bindings</artifactId>
-        <version>0.0.11</version>
+        <version>0.0.12</version>
     </dependency>
     
     <!-- S-124 XML Bindings -->
     <dependency>
         <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
         <artifactId>s124-2_0_1-xml-bindings</artifactId>
-        <version>0.0.11</version>
+        <version>0.0.12</version>
     </dependency>
 </dependencies>
 ```
@@ -129,7 +129,7 @@ If JitPack builds fail:
 ### Dependency Resolution Issues
 
 - Verify you're using the correct JitPack repository URL: `https://jitpack.io`
-- Check that the version matches a published tag exactly (e.g., `0.0.11`)
+- Check that the version matches a published tag exactly (e.g., `0.0.12`)
 - Ensure you're using the correct artifactId (e.g., `s124-2_0_1-xml-bindings`)
 - Test dependency resolution using: `mvn -f test-pom.xml dependency:resolve`
 

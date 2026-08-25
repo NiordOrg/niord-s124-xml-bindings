@@ -61,6 +61,7 @@ public class S100ExchangeCatalogueBuilder {
     // Certificate Information
     protected String schemeAdministrator;
     protected Map<String, X509Certificate> certificateMap;
+    protected Map<String, String> certificateIssuers;
 
     // Objects Factories
     private final ObjectFactory objectFactory;
@@ -91,6 +92,7 @@ public class S100ExchangeCatalogueBuilder {
         // (S-100 Part 15 clause 15-8.11.1)
         this.schemeAdministrator = "IHO";
         this.certificateMap = new HashMap<>();
+        this.certificateIssuers = new HashMap<>();
 
         // And initialise the metadata provider lists
         this.datasetDiscoveryMetadataProviders = new ArrayList<>();
@@ -312,6 +314,22 @@ public class S100ExchangeCatalogueBuilder {
     }
 
     /**
+     * Sets the issuing element of individual certificates, keyed by certificate id.
+     * <p/>
+     * S-100 Part 15, clause 15-8.6: a certificate's issuer attribute holds the id of the
+     * issuing element - either the scheme administrator or a domain coordinator whose own
+     * certificate is included in the exchange set. Certificates with no entry here are
+     * issued by the scheme administrator, which is the common case.
+     *
+     * @param certificateIssuers the issuing element id, keyed by certificate id
+     * @return the S100 exchange set catalogue builder
+     */
+    public S100ExchangeCatalogueBuilder setCertificateIssuers(Map<String, String> certificateIssuers) {
+        this.certificateIssuers.putAll(certificateIssuers);
+        return this;
+    }
+
+    /**
      * Appends a new dataset metadata provider.
      *
      * @param provider the dataset metadata provider to be appended
@@ -424,10 +442,12 @@ public class S100ExchangeCatalogueBuilder {
             for(Map.Entry<String, X509Certificate> certificateEntry : this.certificateMap.entrySet()) {
                 final S100SECertificateType certificateType = new S100SECertificateType();
                 certificateType.setId(certificateEntry.getKey());
-                // The issuer attribute contains the id of the issuing element,
+                // The issuer attribute contains the id of the issuing element:
+                // a domain coordinator certificate included alongside this one, or
                 // by default the SA identified by the schemeAdministrator id
                 // (S-100 Part 15 clause 15-8.6)
-                certificateType.setIssuer(this.schemeAdministrator);
+                certificateType.setIssuer(this.certificateIssuers.getOrDefault(
+                        certificateEntry.getKey(), this.schemeAdministrator));
                 certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(certificateEntry.getValue()));
                 s100SECertificateContainerType.getCertificates().add(certificateType);
             }

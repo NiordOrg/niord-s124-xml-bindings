@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -42,6 +43,7 @@ import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
 import dk.dma.niord.s100.catalog._5_2.S100Purpose;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
 import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignatureReference;
+import dk.dma.niord.s100.catalog._5_2.S100SECertificateType;
 import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnData;
 import dk.dma.niord.s100.catalog._5_2.StandaloneDigitalSignature;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.DataSetIdentificationTypeImpl;
@@ -57,11 +59,22 @@ class S124ExchangeSetFactoryTest {
 
     private static String testCertPem;
 
+    /** Data Server certificate issued by the domain coordinator below, not by the SA. */
+    private static String dataServerViaDcPem;
+    /** Domain coordinator certificate, issued by the (separately installed) SA root. */
+    private static String domainCoordinatorPem;
+
     @BeforeAll
     static void loadCert() throws Exception {
-        try (var in = S124ExchangeSetFactoryTest.class.getResourceAsStream("/test-cert.pem")) {
-            assertThat(in).as("test-cert.pem must be on the test classpath").isNotNull();
-            testCertPem = new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+        testCertPem = readResource("/test-cert.pem");
+        dataServerViaDcPem = readResource("/test-cert-dataserver-via-dc.pem");
+        domainCoordinatorPem = readResource("/test-cert-domaincoordinator.pem");
+    }
+
+    private static String readResource(String name) throws Exception {
+        try (var in = S124ExchangeSetFactoryTest.class.getResourceAsStream(name)) {
+            assertThat(in).as("%s must be on the test classpath", name).isNotNull();
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
         }
     }
 
@@ -221,6 +234,71 @@ class S124ExchangeSetFactoryTest {
                 .contains("issuer=\"IHO-TEST\"");
         assertThat(signature.getCertificates().getSchemeAdministrator().getId()).isEqualTo("IHO-TEST");
         assertThat(signature.getCertificates().getCertificates().get(0).getIssuer()).isEqualTo("IHO-TEST");
+    }
+
+    /**
+     * S-100 Part 15, clause 15-8.7: when a domain coordinator issued the Data Server
+     * certificate, its certificate must travel with the exchange set and the issuer
+     * references must form a path the OEM can walk up to the separately installed SA root.
+     */
+    @Test
+    void domainCoordinatorChainIsIncludedAndReferenced() throws Exception {
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.dc-chain")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(dataServerViaDcPem)
+                .intermediateCertificatePems(List.of(domainCoordinatorPem))
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        Map<String, byte[]> entries = unzip(zipBytes);
+        StandaloneDigitalSignature signature = unmarshalSignature(
+                new String(entries.get("S100_ROOT/CATALOG.SIGN"), StandardCharsets.UTF_8));
+
+        // Both certificates travel with the exchange set; the SA root never does.
+        assertThat(signature.getCertificates().getCertificates()).hasSize(2);
+        Map<String, String> issuerById = signature.getCertificates().getCertificates().stream()
+                .collect(Collectors.toMap(S100SECertificateType::getId, S100SECertificateType::getIssuer));
+
+        // The signature is made with the Data Server certificate, which the domain
+        // coordinator issued; the domain coordinator in turn resolves to the SA.
+        String dataServerId = signature.getDigitalSignature().getCertificateRef();
+        String domainCoordinatorId = issuerById.get(dataServerId);
+        assertThat(domainCoordinatorId).isNotEqualTo("IHO");
+        assertThat(issuerById).containsKey(domainCoordinatorId);
+        assertThat(issuerById.get(domainCoordinatorId)).isEqualTo("IHO");
+        assertThat(signature.getCertificates().getSchemeAdministrator().getId()).isEqualTo("IHO");
+
+        // CATALOG.XML must declare the same chain, or the two files disagree.
+        String catalogXml = new String(entries.get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        assertThat(catalogXml)
+                .as("CATALOG.XML:%n%s", catalogXml)
+                .contains("id=\"" + domainCoordinatorId + "\" issuer=\"IHO\"")
+                .contains("id=\"" + dataServerId + "\" issuer=\"" + domainCoordinatorId + "\"");
+    }
+
+    /**
+     * A certificate that issues nothing else in the set leaves the OEM with a path it cannot
+     * resolve, so it is rejected rather than shipped.
+     */
+    @Test
+    void unrelatedIntermediateCertificateIsRejected() {
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.bad-chain")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .intermediateCertificatePems(List.of(domainCoordinatorPem))
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("does not issue any other configured certificate");
     }
 
     @Test

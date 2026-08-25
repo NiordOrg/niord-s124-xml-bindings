@@ -12,6 +12,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -21,6 +22,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
+import javax.security.auth.x500.X500Principal;
 
 import org.grad.eNav.s100.enums.MaintenanceFrequency;
 import org.grad.eNav.s100.enums.RoleCode;
@@ -184,23 +187,22 @@ public final class S124ExchangeSetFactory {
      * the signature itself, rather than the bare signature value.
      */
     private byte[] buildCatalogueSignature(byte[] catalogBytes) throws CertificateException, JAXBException {
-        X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(cfg.certificatePem);
-
-        S100SECertificateType certificateType = new S100SECertificateType();
-        certificateType.setId(CERTIFICATE_REF);
-        // S-100 Part 15, clause 15-8.6: issuer holds the id of the issuing ELEMENT - the
-        // schemeAdministrator id, or the id of an included domain coordinator certificate -
-        // not the issuer's X.500 distinguished name, which an OEM cannot resolve against the
-        // separately installed SA root certificate.
-        certificateType.setIssuer(cfg.schemeAdministrator);
-        certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(certificate));
-
         S100SECertificateContainerType.SchemeAdministrator schemeAdministrator =
                 new S100SECertificateContainerType.SchemeAdministrator();
         schemeAdministrator.setId(cfg.schemeAdministrator);
         S100SECertificateContainerType certificates = new S100SECertificateContainerType();
         certificates.setSchemeAdministrator(schemeAdministrator);
-        certificates.getCertificates().add(certificateType);
+        for (ChainedCertificate link : certificateChain()) {
+            S100SECertificateType certificateType = new S100SECertificateType();
+            certificateType.setId(link.id());
+            // S-100 Part 15, clause 15-8.6: issuer holds the id of the issuing ELEMENT - the
+            // schemeAdministrator id, or the id of an included domain coordinator certificate -
+            // not the issuer's X.500 distinguished name, which an OEM cannot resolve against the
+            // separately installed SA root certificate.
+            certificateType.setIssuer(link.issuerId());
+            certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(link.certificate()));
+            certificates.getCertificates().add(certificateType);
+        }
 
         StandaloneDigitalSignature standaloneSignature = new StandaloneDigitalSignature();
         standaloneSignature.setFilename(CATALOG_FILE_NAME);
@@ -216,6 +218,68 @@ public final class S124ExchangeSetFactory {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         marshaller.marshal(standaloneSignature, out);
         return out.toByteArray();
+    }
+
+    /** A certificate together with the id of the element that issued it. */
+    private record ChainedCertificate(String id, X509Certificate certificate, String issuerId) {}
+
+    /**
+     * Orders the configured certificates into the path the OEM has to walk, from the Data
+     * Server certificate up to the scheme administrator.
+     * <p/>
+     * S-100 Part 15, clause 15-8.7: "The Data Server must always include the digital
+     * certificate of its Domain Coordinator to ensure the Data Client OEM has all the
+     * certificates required to perform a full certificate path validation without any
+     * external access", and "All certificates in the Exchange Set shall be authenticated by
+     * the SA, either directly or through indirect authentication by one or more Domain
+     * Coordinators." Each certificate therefore references the id of the element above it,
+     * and the topmost references the scheme administrator, whose root certificate is
+     * installed separately by the OEM and is never included here.
+     * <p/>
+     * The order is derived from the certificates themselves by matching each issuer name to
+     * the subject name of the certificate above it, so callers cannot silently ship an
+     * unverifiable chain by listing the intermediates in the wrong order.
+     */
+    private List<ChainedCertificate> certificateChain() throws CertificateException {
+        X509Certificate dataServer = S100ExchangeSetUtils.getCertFromPem(cfg.certificatePem);
+        List<X509Certificate> remaining = new ArrayList<>();
+        for (String pem : cfg.intermediateCertificatePems) {
+            remaining.add(S100ExchangeSetUtils.getCertFromPem(pem));
+        }
+
+        List<X509Certificate> ordered = new ArrayList<>();
+        ordered.add(dataServer);
+        while (!remaining.isEmpty()) {
+            X500Principal issuerName = ordered.get(ordered.size() - 1).getIssuerX500Principal();
+            Optional<X509Certificate> issuer = remaining.stream()
+                    .filter(c -> c.getSubjectX500Principal().equals(issuerName))
+                    .findFirst();
+            if (issuer.isEmpty()) {
+                break;
+            }
+            remaining.remove(issuer.get());
+            ordered.add(issuer.get());
+        }
+        if (!remaining.isEmpty()) {
+            throw new ExchangeSetException(String.format(
+                    "Intermediate certificate %s does not issue any other configured certificate, "
+                            + "so the exchange set would carry a chain the OEM cannot resolve "
+                            + "(S-100 Part 15, clause 15-8.7)",
+                    remaining.get(0).getSubjectX500Principal().getName()));
+        }
+
+        List<ChainedCertificate> chain = new ArrayList<>(ordered.size());
+        for (int i = 0; i < ordered.size(); i++) {
+            // The topmost certificate is issued by the scheme administrator; every other one
+            // is issued by the certificate above it, referenced by its id.
+            String issuerId = i == ordered.size() - 1 ? cfg.schemeAdministrator : intermediateId(i + 1);
+            chain.add(new ChainedCertificate(i == 0 ? CERTIFICATE_REF : intermediateId(i), ordered.get(i), issuerId));
+        }
+        return chain;
+    }
+
+    private static String intermediateId(int index) {
+        return "ca" + index;
     }
 
     /**
@@ -256,8 +320,15 @@ public final class S124ExchangeSetFactory {
                 .setDescription(cfg.description)
                 .setComment(cfg.comment)
                 .setProductSpecification(Collections.singletonList(cfg.productSpecification))
-                .setCertificatesByPem(Collections.singletonMap(CERTIFICATE_REF, cfg.certificatePem))
                 .setSchemeAdministrator(cfg.schemeAdministrator);
+        List<ChainedCertificate> chain = certificateChain();
+        Map<String, X509Certificate> certificatesById = new LinkedHashMap<>();
+        Map<String, String> certificateIssuers = new LinkedHashMap<>();
+        for (ChainedCertificate link : chain) {
+            certificatesById.put(link.id(), link.certificate());
+            certificateIssuers.put(link.id(), link.issuerId());
+        }
+        catBuilder.setCertificates(certificatesById).setCertificateIssuers(certificateIssuers);
 
         for (DatasetFile df : datasetFiles) {
             Geometry bbox = GeometryS124Converter.envelopeToJts(df.dataset.getBoundedBy());
@@ -442,6 +513,7 @@ public final class S124ExchangeSetFactory {
         private String organization;
         private String producerCode;
         private String certificatePem;
+        private List<String> intermediateCertificatePems = Collections.emptyList();
         private S124Signer signer;
 
         private String identifier;
@@ -486,6 +558,20 @@ public final class S124ExchangeSetFactory {
         public Builder organization(String organization) { this.organization = organization; return this; }
         public Builder producerCode(String producerCode) { this.producerCode = producerCode; return this; }
         public Builder certificatePem(String certificatePem) { this.certificatePem = certificatePem; return this; }
+
+        /**
+         * Certificates of the domain coordinators between the Data Server certificate and the
+         * scheme administrator, in any order. Required when the Data Server certificate was
+         * not issued by the scheme administrator directly: S-100 Part 15, clause 15-8.7,
+         * obliges the Data Server to include its Domain Coordinator's certificate so the OEM
+         * can perform a full path validation without external access. The scheme
+         * administrator's own root certificate must NOT be included; the OEM installs it
+         * separately.
+         */
+        public Builder intermediateCertificatePems(List<String> pems) {
+            this.intermediateCertificatePems = pems == null ? Collections.emptyList() : List.copyOf(pems);
+            return this;
+        }
         public Builder signer(S124Signer signer) { this.signer = signer; return this; }
         public Builder identifier(String identifier) { this.identifier = identifier; return this; }
         public Builder dataServerIdentifier(String id) { this.dataServerIdentifier = id; return this; }

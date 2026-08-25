@@ -118,17 +118,20 @@
  * published. Certificates get replaced when they expire, so a cancellation issued after a
  * rotation carries a signature that the current certificate cannot verify.</p>
  *
- * <p>Only the producer knows which certificate signed the original, so pass it with the
- * cancellation:</p>
+ * <p>Clause 17-4.4.1 also requires the entry to keep "all other mandatory metadata fields
+ * also set to the same values as the original, with the exception of the issueDate", so a
+ * cancellation is built from the original catalogue entry rather than from the current
+ * configuration, which may have moved on. Only the producer knows which certificate signed
+ * the original, so pass that too when it has since been replaced:</p>
  * <pre>{@code
- * new Cancellation(fileName, datasetId, edition, update, issueDate, boundingBox,
- *         signatureReference, originalSignatureValues,
+ * new Cancellation(originalDiscoveryMetadata, cancellationIssueDate,
  *         List.of(certificateThatSignedTheOriginal));
  * }</pre>
- * <p>That certificate is then carried alongside the current one and the reused signature is
- * pointed at it. The shorter constructor omits the list and means "signed with the exchange
- * set's current Data Server certificate", which is correct as long as no rotation has
- * happened in between.</p>
+ * <p>The original entry is copied, never modified; only its purpose, issue date and the
+ * certificate reference of the reused signature differ in what is emitted. That certificate
+ * is carried alongside the current one, sharing ids with it where the chains overlap. The
+ * shorter constructor omits the list and means "signed with the exchange set's current Data
+ * Server certificate", which is correct as long as no rotation has happened in between.</p>
  *
  * <h2>Verification, from the receiving system's point of view</h2>
  *

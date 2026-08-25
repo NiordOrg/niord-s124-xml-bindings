@@ -1,5 +1,6 @@
 package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -311,6 +312,22 @@ public final class S124ExchangeSetFactory {
         return prefix + index;
     }
 
+    /**
+     * Deep copies a discovery-metadata entry through JAXB, so reproducing an original in a
+     * cancellation cannot modify the caller's object.
+     */
+    private static S100DatasetDiscoveryMetadata copyOf(S100DatasetDiscoveryMetadata original) {
+        try {
+            JAXBContext context = JAXBContext.newInstance(S100DatasetDiscoveryMetadata.class);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            context.createMarshaller().marshal(original, out);
+            return (S100DatasetDiscoveryMetadata) context.createUnmarshaller()
+                    .unmarshal(new ByteArrayInputStream(out.toByteArray()));
+        } catch (JAXBException e) {
+            throw new ExchangeSetException("Failed to copy the cancelled dataset's metadata", e);
+        }
+    }
+
     /** The id an equal certificate already has in the container, or {@code null}. */
     private static String idOf(Map<String, X509Certificate> certificatesById, X509Certificate certificate) {
         return certificatesById.entrySet().stream()
@@ -431,19 +448,26 @@ public final class S124ExchangeSetFactory {
                     cancellation.certificatePems().get(0),
                     cancellation.certificatePems().subList(1, cancellation.certificatePems().size()),
                     leafId, "caC" + cancellationIndex + ".");
+            // Certificates already carried - typically the domain coordinator, shared with the
+            // current chain - keep the id they were first given. Settle every id before
+            // emitting anything, so issuer references point at the id actually emitted rather
+            // than at the temporary one of a link that turned out to be a duplicate.
+            Map<String, String> settledIds = new LinkedHashMap<>();
             for (ChainedCertificate link : cancellationChain) {
                 String existingId = idOf(certificatesById, link.certificate());
-                if (existingId != null) {
-                    // Already carried for the current chain or an earlier cancellation.
-                    if (link.id().equals(leafId)) {
-                        leafId = existingId;
-                    }
+                settledIds.put(link.id(), existingId != null ? existingId : link.id());
+            }
+            for (ChainedCertificate link : cancellationChain) {
+                String id = settledIds.get(link.id());
+                if (certificatesById.containsKey(id)) {
                     continue;
                 }
-                certificatesById.put(link.id(), link.certificate());
-                certificateIssuers.put(link.id(), link.issuerId());
+                certificatesById.put(id, link.certificate());
+                // The topmost link's issuer is the scheme administrator, which is not a
+                // certificate id and so passes through unchanged.
+                certificateIssuers.put(id, settledIds.getOrDefault(link.issuerId(), link.issuerId()));
             }
-            cancellationCertificateRefs.put(cancellation, leafId);
+            cancellationCertificateRefs.put(cancellation, settledIds.get(leafId));
         }
         catBuilder.setCertificates(certificatesById).setCertificateIssuers(certificateIssuers);
 
@@ -502,46 +526,17 @@ public final class S124ExchangeSetFactory {
         // digital signature and mandatory metadata, but WITHOUT shipping a dataset file. The
         // build(null) call reuses the supplied original signature instead of signing a payload.
         for (Cancellation cancellation : cfg.cancellations) {
-            S100SEDigitalSignatureReference signatureReference =
-                    Optional.ofNullable(cancellation.signatureReference()).orElse(cfg.signatureAlgorithm);
-            catBuilder.addDatasetMetadata(builder -> builder
-                    .setFileName("file:/" + cancellation.fileName())
-                    .setDatasetID(cancellation.datasetId())
-                    .setCompressionFlag(false)
-                    .setDataProtection(false)
-                    .setCopyright(true)
-                    .setClassification(cfg.classification)
-                    .setPurpose(S100Purpose.CANCELLATION)
-                    .setNotForNavigation(cfg.notForNavigation)
-                    .setSpecificUsage(cfg.specificUsage)
-                    .setEditionNumber(cancellation.editionNumber())
-                    .setUpdateNumber(cancellation.updateNumber())
-                    .setIssueDate(cancellation.issueDate())
-                    .setBoundingBox(cancellation.boundingBox())
-                    .setProductSpecification(cfg.productSpecification)
-                    .setProducingAgency(cfg.organization)
-                    .setProducingAgencyRole(cfg.producingAgencyRole)
-                    .setProducingAgencyPhone(cfg.phone)
-                    .setProducingAgencyPhoneType(cfg.phoneType)
-                    .setProducingAgencyElectronicMailAddresses(cfg.emails)
-                    .setProducingAgencyCity(cfg.city)
-                    .setProducingAgencyAdministrativeArea(cfg.administrativeArea)
-                    .setProducingAgencyPostalCode(cfg.postalCode)
-                    .setProducingAgencyCountry(cfg.country)
-                    .setProducingAgencyOnlineResource(cfg.onlineResource)
-                    .setProducingAgencyContactInstructions(cfg.contactInstructions)
-                    .setProducerCode(cfg.producerCode)
-                    .setEncodingFormat(S100EncodingFormat.GML)
-                    .setDataCoverages(cancellation.boundingBox())
-                    .setComment(cfg.datasetComment)
-                    .setMetadataDateStamp(LocalDate.now(ZoneOffset.UTC))
-                    .setReplacedData(false)
-                    .setMaintenanceFrequency(cfg.maintenanceDate == null ? null : cfg.maintenanceFrequency)
-                    .setMaintenanceDate(cfg.maintenanceDate)
-                    .setDigitalSignatureReference(signatureReference)
-                    .setDigitalSignatureValues(withCertificateRef(cancellation.signatureValues(),
-                            cancellationCertificateRefs.get(cancellation)))
-                    .build(null));
+            // Clause 17-4.4.1 requires every other mandatory field to keep the value it had in
+            // the original, so the original entry is reproduced rather than rebuilt from the
+            // current configuration, which may have moved on since the dataset was issued.
+            S100DatasetDiscoveryMetadata entry = copyOf(cancellation.original());
+            entry.setPurpose(S100Purpose.CANCELLATION);
+            entry.setIssueDate(cancellation.issueDate());
+            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatures = withCertificateRef(
+                    entry.getDigitalSignatureValues(), cancellationCertificateRefs.get(cancellation));
+            entry.getDigitalSignatureValues().clear();
+            entry.getDigitalSignatureValues().addAll(signatures);
+            catBuilder.addDatasetMetadata(builder -> entry);
         }
 
         try {
@@ -576,63 +571,43 @@ public final class S124ExchangeSetFactory {
     private record DatasetFile(String fileName, byte[] bytes, Dataset dataset, String uuid) {}
 
     /**
-     * A fileless dataset cancellation, per S-100 Ed 5.x Part 17, clause 17-4.4.1.
+     * A fileless dataset cancellation (S-100 Part 17, clause 17-4.4.1): a discovery-metadata
+     * entry that withdraws a previously published dataset without shipping a file.
      *
-     * <p>The cancelled dataset's file is <em>not</em> shipped in the exchange set; instead the
-     * catalogue carries a discovery-metadata entry with {@code purpose=cancellation} that
-     * reproduces the cancelled dataset's identifying metadata and reuses its <em>original</em>
-     * digital signature, so a consumer can match and remove exactly the dataset it received.</p>
+     * <p>The clause requires the entry to reproduce the cancelled dataset's metadata - "with
+     * all other mandatory metadata fields also set to the same values as the original, with
+     * the exception of the issueDate" - so the original entry is supplied whole rather than
+     * rebuilt field by field from the current configuration, which may have moved on since
+     * the dataset was issued. Take it from the catalogue that published the dataset.</p>
      *
-     * @param fileName          the cancelled dataset's file name (without the {@code file:/} prefix,
-     *                          which the factory adds); required
-     * @param datasetId         the cancelled dataset's identifier (MRN); may be {@code null}
-     * @param editionNumber     the cancelled dataset's edition number
-     * @param updateNumber      the cancelled dataset's update number
-     * @param issueDate         the issue date of the fileless cancellation <em>itself</em>, not the
-     *                          cancelled dataset's; required. S-100 5.2.0 clause 17-4.4.1 requires
-     *                          "all other mandatory metadata fields also set to the same values as
-     *                          the original, with the exception of the issueDate, which must be set
-     *                          to the issue date of the fileless cancellation itself"
-     * @param boundingBox       the cancelled dataset's bounding box; required, since boundingBox is
-     *                          mandatory (Mult 1) in the S-124 clause 12.2.2 profile and a fileless
-     *                          cancellation reproduces the original's mandatory metadata
-     * @param signatureReference the algorithm of the original signature; {@code null} falls back to
-     *                          the exchange set's {@code signatureAlgorithm}
-     * @param signatureValues   the cancelled dataset's <em>original</em> digital signature value(s);
-     *                          required and non-empty (the catalogue schema mandates at least one)
+     * @param original        the cancelled dataset's discovery metadata, reproduced verbatim
+     *                        apart from the issue date and purpose; copied, never modified
+     * @param issueDate       the issue date of the cancellation itself, the one field the
+     *                        clause excepts from reproduction
+     * @param certificatePems the chain that verifies the reused signature, signing certificate
+     *                        first; empty means the exchange set's current Data Server
+     *                        certificate signed it
      */
     public record Cancellation(
-            String fileName,
-            String datasetId,
-            BigInteger editionNumber,
-            BigInteger updateNumber,
+            S100DatasetDiscoveryMetadata original,
             LocalDate issueDate,
-            Geometry boundingBox,
-            S100SEDigitalSignatureReference signatureReference,
-            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatureValues,
             List<String> certificatePems) {
 
-        /**
-         * A cancellation signed with the exchange set's current Data Server certificate.
-         * Use the canonical constructor instead when the original dataset was signed with a
-         * certificate that has since been replaced.
-         */
-        public Cancellation(String fileName, String datasetId, BigInteger editionNumber,
-                BigInteger updateNumber, LocalDate issueDate, Geometry boundingBox,
-                S100SEDigitalSignatureReference signatureReference,
-                List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatureValues) {
-            this(fileName, datasetId, editionNumber, updateNumber, issueDate, boundingBox,
-                    signatureReference, signatureValues, List.of());
+        /** A cancellation whose original was signed with the current Data Server certificate. */
+        public Cancellation(S100DatasetDiscoveryMetadata original, LocalDate issueDate) {
+            this(original, issueDate, List.of());
         }
 
         public Cancellation {
-            certificatePems = certificatePems == null ? List.of() : List.copyOf(certificatePems);
-            Objects.requireNonNull(fileName, "cancellation fileName must be set");
+            Objects.requireNonNull(original, "cancellation original metadata must be set");
             Objects.requireNonNull(issueDate, "cancellation issueDate must be set");
-            Objects.requireNonNull(boundingBox, "cancellation boundingBox must be set (S-124 "
-                    + "clause 12.2.2: boundingBox is mandatory in dataset discovery metadata)");
-            if (signatureValues == null || signatureValues.isEmpty()) {
-                throw new IllegalArgumentException("cancellation must carry the original dataset's "
+            certificatePems = certificatePems == null ? List.of() : List.copyOf(certificatePems);
+            if (original.getFileName() == null || original.getFileName().isBlank()) {
+                throw new IllegalArgumentException("cancellation original must carry the file name "
+                        + "of the dataset being cancelled (S-100 Part 17, clause 17-4.4.1)");
+            }
+            if (original.getDigitalSignatureValues().isEmpty()) {
+                throw new IllegalArgumentException("cancellation original must carry the dataset's "
                         + "digital signature (S-100 Part 17 clause 17-4.4.1: a fileless cancellation "
                         + "reuses the original signature)");
             }

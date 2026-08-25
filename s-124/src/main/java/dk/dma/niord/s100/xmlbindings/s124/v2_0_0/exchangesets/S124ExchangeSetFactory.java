@@ -4,9 +4,11 @@ import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,19 +30,23 @@ import org.grad.eNav.s100.utils.S100ExchangeCatalogueBuilder;
 import org.grad.eNav.s100.utils.S100ExchangeSetUtils;
 import org.locationtech.jts.geom.Geometry;
 
+import dk.dma.niord.s100.catalog._5_2.DataStatus;
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100EncodingFormat;
-import dk.dma.niord.s100.catalog._5_2.S100NavigationPurpose;
 import dk.dma.niord.s100.catalog._5_2.S100ProductSpecification;
-import dk.dma.niord.s100.catalog._5_2.S100ProtectionScheme;
 import dk.dma.niord.s100.catalog._5_2.S100Purpose;
-import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignature;
+import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
+import dk.dma.niord.s100.catalog._5_2.S100SECertificateType;
 import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignatureReference;
+import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnData;
+import dk.dma.niord.s100.catalog._5_2.StandaloneDigitalSignature;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124Utils;
+import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
+import jakarta.xml.bind.Marshaller;
 
 /**
  * Builds an S-100 Ed 5.0 Part 17 exchange set (ZIP) from one or more S-124
@@ -58,15 +64,16 @@ import jakarta.xml.bind.JAXBException;
  *         .toBytes();
  * }</pre>
  *
- * <p>The factory wraps {@link S100ExchangeCatalogueBuilder} and produces:</p>
+ * <p>The factory wraps {@link S100ExchangeCatalogueBuilder} and produces the folder
+ * structure of S-100 Ed 5.x Part 17, clause 17-4.2:</p>
  * <pre>
- * S_100/
+ * S100_ROOT/
  *  ├── S-124/
- *  │   ├── DATASET_FILES/   124&lt;producer&gt;&lt;uuid&gt;-&lt;idx&gt;.XML
+ *  │   ├── DATASET_FILES/   124&lt;producer&gt;&lt;uuid&gt;-&lt;idx&gt;.GML
  *  │   ├── CATALOGUES/      (empty)
  *  │   └── SUPPORT_FILES/   (empty)
  *  ├── CATALOG.XML
- *  └── CATALOG.SIGN
+ *  └── CATALOG.SIGN         (a Part 15 StandaloneDigitalSignature document)
  * </pre>
  *
  * <p>In addition to datasets (written as files and listed in the catalogue with
@@ -76,19 +83,38 @@ import jakarta.xml.bind.JAXBException;
  * that reproduces the cancelled dataset's file name, its <em>original</em> digital signature
  * and all other mandatory metadata, but ships no dataset file. Consumers use it to remove the
  * referenced dataset. See {@link Cancellation}.</p>
+ *
+ * <p><strong>Producer responsibilities the factory cannot check.</strong> Two entries of the
+ * S-124 clause 12.2.2 discovery-metadata profile depend on the content of the dataset's
+ * {@code NavwarnPreamble}, which this factory does not parse:</p>
+ * <ul>
+ *   <li>{@code datasetID} is synthesised as {@code <datasetMrnPrefix>:<dataset gml id>};
+ *       S-124 requires it to match the {@code interoperabilityIdentifier} of the dataset's
+ *       {@code messageSeriesIdentifier} when that is present, so producers must choose the
+ *       dataset id and {@link Builder#datasetMrnPrefix(String) MRN prefix} accordingly.</li>
+ *   <li>{@code description} is taken from the dataset's {@code datasetAbstract}; S-124
+ *       requires its content to match the preamble's {@code generalArea} and {@code locality}.</li>
+ * </ul>
  */
 public final class S124ExchangeSetFactory {
 
     private static final String CERTIFICATE_REF = "cer1";
     private static final String DEFAULT_DATASET_MRN_PREFIX = "urn:mrn:iho:s124";
     private static final String DEFAULT_EXCHANGE_SET_MRN_PREFIX = "urn:mrn:iho:s124:exchangeset";
+    /** S-124 clause 12.2.2 fixes specificUsage: "Must always be 'Navigational Warning Service'". */
+    public static final String SPECIFIC_USAGE = "Navigational Warning Service";
+    /** S-124 clause 9.6: "S-124 datasets must not exceed 50KB." */
+    private static final int MAX_DATASET_SIZE_BYTES = 50 * 1024;
 
-    private static final String ROOT_DIR = "S_100/";
+    // S-100 Part 17, clause 17-4.2: all S-100 content lives in the single top level root
+    // folder S100_ROOT, which also holds CATALOG.XML and its signature CATALOG.SIGN.
+    private static final String ROOT_DIR = "S100_ROOT/";
     private static final String PRODUCT_DIR = ROOT_DIR + "S-124/";
     private static final String DATASET_FILES_DIR = PRODUCT_DIR + "DATASET_FILES/";
     private static final String CATALOGUES_DIR = PRODUCT_DIR + "CATALOGUES/";
     private static final String SUPPORT_FILES_DIR = PRODUCT_DIR + "SUPPORT_FILES/";
-    private static final String CATALOG_XML = ROOT_DIR + "CATALOG.XML";
+    private static final String CATALOG_FILE_NAME = "CATALOG.XML";
+    private static final String CATALOG_XML = ROOT_DIR + CATALOG_FILE_NAME;
     private static final String CATALOG_SIGN = ROOT_DIR + "CATALOG.SIGN";
 
     private final Builder cfg;
@@ -107,7 +133,7 @@ public final class S124ExchangeSetFactory {
             List<DatasetFile> datasetFiles = marshalDatasets();
             String catalogXml = buildCatalogueXml(datasetFiles);
             byte[] catalogBytes = catalogXml.getBytes(StandardCharsets.UTF_8);
-            byte[] catalogSig = cfg.signer.sign(cfg.signatureAlgorithm, catalogBytes);
+            byte[] catalogSig = buildCatalogueSignature(catalogBytes);
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             try (ZipOutputStream zos = new ZipOutputStream(baos)) {
@@ -123,6 +149,8 @@ public final class S124ExchangeSetFactory {
                 putFileEntry(zos, CATALOG_SIGN, catalogSig);
             }
             return baos.toByteArray();
+        } catch (ExchangeSetException e) {
+            throw e;
         } catch (Exception e) {
             throw new ExchangeSetException("Failed to build S-124 exchange set", e);
         }
@@ -133,26 +161,87 @@ public final class S124ExchangeSetFactory {
         AtomicInteger idx = new AtomicInteger();
         for (Dataset dataset : cfg.datasets) {
             String uuid = datasetUuid(dataset);
-            String fileName = String.format("124%s%s-%d.XML", cfg.producerCode, uuid, idx.getAndIncrement());
+            // S-100 Part 17, clause 17-4.3 (mandated for S-124 by clause 9.7): the file name is
+            // the product code, the producer code, a unique code and the encoding specific file
+            // extension - .GML for the GML encoding (.XML is reserved for metadata files).
+            String fileName = String.format("124%s%s-%d.GML", cfg.producerCode, uuid, idx.getAndIncrement());
             byte[] bytes = S124Utils.marshalS124(dataset).getBytes(StandardCharsets.UTF_8);
+            if (bytes.length > MAX_DATASET_SIZE_BYTES) {
+                throw new ExchangeSetException(String.format(
+                        "S-124 dataset %s is %d bytes, exceeding the %d byte limit of S-124 clause 9.6",
+                        fileName, bytes.length, MAX_DATASET_SIZE_BYTES));
+            }
             result.add(new DatasetFile(fileName, bytes, dataset, uuid));
         }
         return result;
+    }
+
+    /**
+     * Builds the CATALOG.SIGN content. S-100 Part 15, clauses 15-8.7 and 15-8.11.2, require
+     * auxiliary files that are not covered by the catalogue metadata - the catalogue itself
+     * above all - to be signed with a self-contained StandaloneDigitalSignature document that
+     * carries the signed file name, all certificates needed to authenticate the signature and
+     * the signature itself, rather than the bare signature value.
+     */
+    private byte[] buildCatalogueSignature(byte[] catalogBytes) throws CertificateException, JAXBException {
+        X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(cfg.certificatePem);
+        // The issuer of the Data Server certificate is the scheme administrator of the
+        // self-contained document, so that the certificate's issuer reference resolves in it.
+        String issuer = certificate.getIssuerX500Principal().getName();
+
+        S100SECertificateType certificateType = new S100SECertificateType();
+        certificateType.setId(CERTIFICATE_REF);
+        certificateType.setIssuer(issuer);
+        certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(certificate));
+
+        S100SECertificateContainerType.SchemeAdministrator schemeAdministrator =
+                new S100SECertificateContainerType.SchemeAdministrator();
+        schemeAdministrator.setId(issuer);
+        S100SECertificateContainerType certificates = new S100SECertificateContainerType();
+        certificates.setSchemeAdministrator(schemeAdministrator);
+        certificates.getCertificates().add(certificateType);
+
+        StandaloneDigitalSignature standaloneSignature = new StandaloneDigitalSignature();
+        standaloneSignature.setFilename(CATALOG_FILE_NAME);
+        standaloneSignature.setCertificates(certificates);
+        standaloneSignature.setDigitalSignature(
+                signatureOnData("catalogueSig", cfg.signatureAlgorithm, catalogBytes));
+
+        JAXBContext jaxbContext = JAXBContext.newInstance(
+                StandaloneDigitalSignature.class.getPackageName(),
+                StandaloneDigitalSignature.class.getClassLoader());
+        Marshaller marshaller = jaxbContext.createMarshaller();
+        marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, Boolean.TRUE);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        marshaller.marshal(standaloneSignature, out);
+        return out.toByteArray();
+    }
+
+    /**
+     * Signs a resource with the configured signer. S-100 Part 15, clauses 15-8.11.3 and
+     * 15-8.11.4, realize a signature over a data resource as S100_SE_SignatureOnData, which
+     * carries the mandatory dataStatus; S-124 data is never compressed or encrypted, so the
+     * status is always unencrypted.
+     */
+    private S100SESignatureOnData signatureOnData(String id, S100SEDigitalSignatureReference algorithm, byte[] payload) {
+        S100SESignatureOnData signature = new S100SESignatureOnData();
+        signature.setId(id);
+        signature.setCertificateRef(CERTIFICATE_REF);
+        signature.setDataStatus(DataStatus.UNENCRYPTED);
+        signature.setValue(cfg.signer.sign(algorithm, payload));
+        return signature;
     }
 
     private String buildCatalogueXml(List<DatasetFile> datasetFiles) throws JAXBException, CertificateException {
         AtomicInteger signatureCounter = new AtomicInteger(1);
 
         S100ExchangeCatalogueBuilder catBuilder = new S100ExchangeCatalogueBuilder(
-                (objectId, algorithm, payload) -> {
-                    S100SEDigitalSignature sig = new S100SEDigitalSignature();
-                    sig.setId(String.format("sig%d", signatureCounter.getAndIncrement()));
-                    sig.setCertificateRef(CERTIFICATE_REF);
-                    sig.setValue(cfg.signer.sign(algorithm, payload));
-                    return sig;
-                })
+                (objectId, algorithm, payload) -> signatureOnData(
+                        String.format("sig%d", signatureCounter.getAndIncrement()), algorithm, payload))
                 .setIdentifier(cfg.identifier)
-                .setDateTime(LocalDateTime.now())
+                // Part 17 mandates the format yyyy-mm-ddThh:mm:ssZ, i.e. UTC, for the
+                // exchange catalogue identifier's creation date and time.
+                .setDateTime(LocalDateTime.now(ZoneOffset.UTC))
                 .setDataServerIdentifier(cfg.dataServerIdentifier)
                 .setOrganization(cfg.organization)
                 .setElectronicMailAddresses(cfg.emails)
@@ -180,8 +269,9 @@ public final class S124ExchangeSetFactory {
                     .setDatasetID(cfg.datasetMrnPrefix + ":" + df.uuid)
                     .setDescription(Optional.ofNullable(ident).map(DataSetIdentificationType::getDatasetAbstract).orElse(null))
                     .setCompressionFlag(false)
+                    // No protectionScheme: S-124 data is unprotected (dataProtection=false) and
+                    // the S-124 clause 12.2.2 profile has no protectionScheme attribute.
                     .setDataProtection(false)
-                    .setProtectionScheme(S100ProtectionScheme.S_100_P_15)
                     .setCopyright(true)
                     .setClassification(cfg.classification)
                     .setPurpose(S100Purpose.NEW_DATASET)
@@ -195,14 +285,24 @@ public final class S124ExchangeSetFactory {
                     .setProductSpecification(cfg.productSpecification)
                     .setProducingAgency(cfg.organization)
                     .setProducingAgencyRole(cfg.producingAgencyRole)
+                    .setProducingAgencyPhone(cfg.phone)
+                    .setProducingAgencyPhoneType(cfg.phoneType)
+                    .setProducingAgencyElectronicMailAddresses(cfg.emails)
+                    .setProducingAgencyCity(cfg.city)
+                    .setProducingAgencyAdministrativeArea(cfg.administrativeArea)
+                    .setProducingAgencyPostalCode(cfg.postalCode)
+                    .setProducingAgencyCountry(cfg.country)
+                    .setProducingAgencyOnlineResource(cfg.onlineResource)
+                    .setProducingAgencyContactInstructions(cfg.contactInstructions)
                     .setProducerCode(cfg.producerCode)
                     .setEncodingFormat(S100EncodingFormat.GML)
                     .setDataCoverages(bbox)
                     .setComment(cfg.datasetComment)
-                    .setMetadataDateStamp(LocalDate.now())
+                    .setMetadataDateStamp(LocalDate.now(ZoneOffset.UTC))
                     .setReplacedData(false)
-                    .setNavigationPurposes(Collections.singletonList(S100NavigationPurpose.OVERVIEW))
-                    .setMaintenanceFrequency(cfg.maintenanceFrequency)
+                    // No navigationPurpose: the S-124 clause 12.2.2 profile has no such attribute.
+                    .setMaintenanceFrequency(cfg.maintenanceDate == null ? null : cfg.maintenanceFrequency)
+                    .setMaintenanceDate(cfg.maintenanceDate)
                     .setDigitalSignatureReference(cfg.signatureAlgorithm)
                     .build(df.bytes));
         }
@@ -219,7 +319,6 @@ public final class S124ExchangeSetFactory {
                     .setDatasetID(cancellation.datasetId())
                     .setCompressionFlag(false)
                     .setDataProtection(false)
-                    .setProtectionScheme(S100ProtectionScheme.S_100_P_15)
                     .setCopyright(true)
                     .setClassification(cfg.classification)
                     .setPurpose(S100Purpose.CANCELLATION)
@@ -232,14 +331,23 @@ public final class S124ExchangeSetFactory {
                     .setProductSpecification(cfg.productSpecification)
                     .setProducingAgency(cfg.organization)
                     .setProducingAgencyRole(cfg.producingAgencyRole)
+                    .setProducingAgencyPhone(cfg.phone)
+                    .setProducingAgencyPhoneType(cfg.phoneType)
+                    .setProducingAgencyElectronicMailAddresses(cfg.emails)
+                    .setProducingAgencyCity(cfg.city)
+                    .setProducingAgencyAdministrativeArea(cfg.administrativeArea)
+                    .setProducingAgencyPostalCode(cfg.postalCode)
+                    .setProducingAgencyCountry(cfg.country)
+                    .setProducingAgencyOnlineResource(cfg.onlineResource)
+                    .setProducingAgencyContactInstructions(cfg.contactInstructions)
                     .setProducerCode(cfg.producerCode)
                     .setEncodingFormat(S100EncodingFormat.GML)
                     .setDataCoverages(cancellation.boundingBox())
                     .setComment(cfg.datasetComment)
-                    .setMetadataDateStamp(LocalDate.now())
+                    .setMetadataDateStamp(LocalDate.now(ZoneOffset.UTC))
                     .setReplacedData(false)
-                    .setNavigationPurposes(Collections.singletonList(S100NavigationPurpose.OVERVIEW))
-                    .setMaintenanceFrequency(cfg.maintenanceFrequency)
+                    .setMaintenanceFrequency(cfg.maintenanceDate == null ? null : cfg.maintenanceFrequency)
+                    .setMaintenanceDate(cfg.maintenanceDate)
                     .setDigitalSignatureReference(signatureReference)
                     .setDigitalSignatureValues(cancellation.signatureValues())
                     .build(null));
@@ -289,12 +397,14 @@ public final class S124ExchangeSetFactory {
      * @param datasetId         the cancelled dataset's identifier (MRN); may be {@code null}
      * @param editionNumber     the cancelled dataset's edition number
      * @param updateNumber      the cancelled dataset's update number
-     * @param issueDate         the issue date recorded in the entry; required. Note S-100 5.2.0
-     *                          clause 17-4.4.1 literally requires "all other mandatory metadata
-     *                          fields also set to the same values as the original" (i.e. the
-     *                          original issue date); a per-cancellation issue date is under
-     *                          WENDWG clarification (TSM10-7.3a), so the caller decides which to pass
-     * @param boundingBox       the cancelled dataset's bounding box; may be {@code null}
+     * @param issueDate         the issue date of the fileless cancellation <em>itself</em>, not the
+     *                          cancelled dataset's; required. S-100 5.2.0 clause 17-4.4.1 requires
+     *                          "all other mandatory metadata fields also set to the same values as
+     *                          the original, with the exception of the issueDate, which must be set
+     *                          to the issue date of the fileless cancellation itself"
+     * @param boundingBox       the cancelled dataset's bounding box; required, since boundingBox is
+     *                          mandatory (Mult 1) in the S-124 clause 12.2.2 profile and a fileless
+     *                          cancellation reproduces the original's mandatory metadata
      * @param signatureReference the algorithm of the original signature; {@code null} falls back to
      *                          the exchange set's {@code signatureAlgorithm}
      * @param signatureValues   the cancelled dataset's <em>original</em> digital signature value(s);
@@ -313,6 +423,8 @@ public final class S124ExchangeSetFactory {
         public Cancellation {
             Objects.requireNonNull(fileName, "cancellation fileName must be set");
             Objects.requireNonNull(issueDate, "cancellation issueDate must be set");
+            Objects.requireNonNull(boundingBox, "cancellation boundingBox must be set (S-124 "
+                    + "clause 12.2.2: boundingBox is mandatory in dataset discovery metadata)");
             if (signatureValues == null || signatureValues.isEmpty()) {
                 throw new IllegalArgumentException("cancellation must carry the original dataset's "
                         + "digital signature (S-100 Part 17 clause 17-4.4.1: a fileless cancellation "
@@ -337,7 +449,7 @@ public final class S124ExchangeSetFactory {
         private String description;
         private String comment;
         private String datasetComment;
-        private String specificUsage;
+        private String specificUsage = SPECIFIC_USAGE;
         private List<String> emails = Collections.emptyList();
         private String phone;
         private TelephoneType phoneType = TelephoneType.VOICE;
@@ -346,11 +458,19 @@ public final class S124ExchangeSetFactory {
         private String country;
         private String administrativeArea;
         private List<Locale> locales = Collections.singletonList(Locale.ENGLISH);
-        private S100SEDigitalSignatureReference signatureAlgorithm = S100SEDigitalSignatureReference.ECDSA_384_SHA_3;
+        // S-100 Part 15, clause 15-8.7: "The digitalSignatureReference field must be encoded
+        // 'ECDSA-384-SHA2'."
+        private S100SEDigitalSignatureReference signatureAlgorithm = S100SEDigitalSignatureReference.ECDSA_384_SHA_2;
         private boolean notForNavigation = true;
         private SecurityClassification classification = SecurityClassification.UNCLASSIFIED;
         private RoleCode producingAgencyRole = RoleCode.CUSTODIAN;
-        private MaintenanceFrequency maintenanceFrequency = MaintenanceFrequency.CONTINUAL;
+        // S-100 Part 17 restricts MD_MaintenanceFrequencyCode to asNeeded and irregular.
+        private MaintenanceFrequency maintenanceFrequency = MaintenanceFrequency.AS_NEEDED;
+        // resourceMaintenance is optional (0..1) but MD_MaintenanceInformation requires the
+        // frequency and a maintenance date together, so it is only encoded when a date is given.
+        private LocalDate maintenanceDate;
+        private String onlineResource;
+        private String contactInstructions;
 
         private Builder() {}
 
@@ -368,7 +488,19 @@ public final class S124ExchangeSetFactory {
         public Builder description(String description) { this.description = description; return this; }
         public Builder comment(String comment) { this.comment = comment; return this; }
         public Builder datasetComment(String comment) { this.datasetComment = comment; return this; }
-        public Builder specificUsage(String usage) { this.specificUsage = usage; return this; }
+        /**
+         * Overrides the dataset entries' specific usage. S-124 clause 12.2.2 fixes the value to
+         * "Navigational Warning Service", so only that value (or {@code null}, which omits the
+         * optional attribute) is accepted.
+         */
+        public Builder specificUsage(String usage) {
+            if (usage != null && !SPECIFIC_USAGE.equals(usage)) {
+                throw new IllegalArgumentException(String.format(
+                        "specificUsage must be \"%s\" (S-124 clause 12.2.2)", SPECIFIC_USAGE));
+            }
+            this.specificUsage = usage;
+            return this;
+        }
         public Builder emails(List<String> emails) { this.emails = emails; return this; }
         public Builder phone(String phone) { this.phone = phone; return this; }
         public Builder phoneType(TelephoneType phoneType) { this.phoneType = phoneType; return this; }
@@ -381,7 +513,33 @@ public final class S124ExchangeSetFactory {
         public Builder notForNavigation(boolean v) { this.notForNavigation = v; return this; }
         public Builder classification(SecurityClassification c) { this.classification = c; return this; }
         public Builder producingAgencyRole(RoleCode role) { this.producingAgencyRole = role; return this; }
-        public Builder maintenanceFrequency(MaintenanceFrequency f) { this.maintenanceFrequency = f; return this; }
+        /**
+         * Overrides the dataset entries' maintenance frequency. S-100 Part 17 restricts
+         * MD_MaintenanceFrequencyCode in discovery metadata to {@code asNeeded} and
+         * {@code irregular}; all other ISO 19115-1 values are rejected.
+         */
+        public Builder maintenanceFrequency(MaintenanceFrequency f) {
+            if (f != MaintenanceFrequency.AS_NEEDED && f != MaintenanceFrequency.IRREGULAR) {
+                throw new IllegalArgumentException("maintenanceFrequency must be asNeeded or "
+                        + "irregular (S-100 Part 17 restricts MD_MaintenanceFrequencyCode to these values)");
+            }
+            this.maintenanceFrequency = f;
+            return this;
+        }
+
+        /**
+         * Date of the resource maintenance. Encoding {@code resourceMaintenance} at all is
+         * optional, but S-100 Part 17 MD_MaintenanceInformation requires the maintenance
+         * frequency and this date together, so no maintenance information is encoded unless
+         * this is set.
+         */
+        public Builder maintenanceDate(LocalDate d) { this.maintenanceDate = d; return this; }
+
+        /** Producing agency online resource; one of the CI_Contact attributes of Table 17-3 NOTE 2. */
+        public Builder onlineResource(String url) { this.onlineResource = url; return this; }
+
+        /** Producing agency contact instructions; one of the CI_Contact attributes of Table 17-3 NOTE 2. */
+        public Builder contactInstructions(String instructions) { this.contactInstructions = instructions; return this; }
 
         public S124ExchangeSetFactory build() {
             Objects.requireNonNull(datasets, "datasets must be set");
@@ -405,16 +563,23 @@ public final class S124ExchangeSetFactory {
                 dataServerIdentifier = UUID.nameUUIDFromBytes(organization.getBytes(StandardCharsets.UTF_8)).toString();
             }
             if (description == null) {
-                description = String.format("S-124 Exchange Set generated by %s at %s",
+                description = String.format("S-124 Exchange Set generated by %s at %sZ",
                         organization,
-                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+                        LocalDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
             }
             return new S124ExchangeSetFactory(this);
         }
     }
 
-    /** Thrown when assembling the exchange set fails for IO, JAXB or certificate reasons. */
+    /**
+     * Thrown when assembling the exchange set fails for IO, JAXB or certificate reasons, or
+     * when the content to package violates a hard S-124 limit.
+     */
     public static final class ExchangeSetException extends RuntimeException {
+        public ExchangeSetException(String message) {
+            super(message);
+        }
+
         public ExchangeSetException(String message, Throwable cause) {
             super(message, cause);
         }

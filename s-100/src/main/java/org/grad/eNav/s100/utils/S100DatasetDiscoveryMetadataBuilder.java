@@ -22,6 +22,7 @@ import org.grad.eNav.s100.enums.CodeListValueTypeProvider;
 import org.grad.eNav.s100.enums.MaintenanceFrequency;
 import org.grad.eNav.s100.enums.RoleCode;
 import org.grad.eNav.s100.enums.SecurityClassification;
+import org.grad.eNav.s100.enums.TelephoneType;
 import org.iso.standards.iso._19115.__3.cit._2.*;
 import org.iso.standards.iso._19115.__3.gco._1.DatePropertyType;
 import org.iso.standards.iso._19115.__3.gco._1.TMPeriodDurationPropertyType;
@@ -38,9 +39,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The S100 Dataset Discovery Metadata Builder Class.
@@ -51,6 +54,10 @@ import java.util.Optional;
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
 public class S100DatasetDiscoveryMetadataBuilder {
+
+    // The only MD_MaintenanceFrequencyCode values allowed by S-100 Part 17
+    private static final Set<MaintenanceFrequency> ALLOWED_MAINTENANCE_FREQUENCIES =
+            EnumSet.of(MaintenanceFrequency.AS_NEEDED, MaintenanceFrequency.IRREGULAR);
 
     // Class Variables
     protected String fileName;
@@ -77,6 +84,15 @@ public class S100DatasetDiscoveryMetadataBuilder {
     protected S100ProductSpecification productSpecification;
     protected String producingAgency;
     protected RoleCode producingAgencyRole;
+    protected String producingAgencyPhone;
+    protected TelephoneType producingAgencyPhoneType;
+    protected List<String> producingAgencyElectronicMailAddresses;
+    protected String producingAgencyCity;
+    protected String producingAgencyAdministrativeArea;
+    protected String producingAgencyPostalCode;
+    protected String producingAgencyCountry;
+    protected String producingAgencyOnlineResource;
+    protected String producingAgencyContactInstructions;
     protected String producerCode;
     protected S100EncodingFormat encodingFormat;
     protected Geometry dataCoverages;
@@ -319,7 +335,9 @@ public class S100DatasetDiscoveryMetadataBuilder {
     }
 
     /**
-     * Sets time instant begin.
+     * Sets time instant begin. The temporal extent is only encoded if at least
+     * one of the time instant begin and end is provided, and the value is
+     * encoded as a UTC date-time.
      *
      * @param timeInstantBegin the time instant begin
      * @return the S-100 dataset discovery metadata builder
@@ -330,7 +348,9 @@ public class S100DatasetDiscoveryMetadataBuilder {
     }
 
     /**
-     * Sets time instant end.
+     * Sets time instant end. The temporal extent is only encoded if at least
+     * one of the time instant begin and end is provided, and the value is
+     * encoded as a UTC date-time.
      *
      * @param timeInstantEnd the time instant end
      * @return the S-100 dataset discovery metadata builder
@@ -370,6 +390,113 @@ public class S100DatasetDiscoveryMetadataBuilder {
      */
     public S100DatasetDiscoveryMetadataBuilder setProducingAgencyRole(RoleCode producingAgencyRole) {
         this.producingAgencyRole = producingAgencyRole;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency phone number. This is one of the contact
+     * details that can satisfy the mandatory producing agency contact
+     * information.
+     *
+     * @param producingAgencyPhone the producing agency phone number
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyPhone(String producingAgencyPhone) {
+        this.producingAgencyPhone = producingAgencyPhone;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency phone number type.
+     *
+     * @param producingAgencyPhoneType the producing agency phone number type
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyPhoneType(TelephoneType producingAgencyPhoneType) {
+        this.producingAgencyPhoneType = producingAgencyPhoneType;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency electronic mail addresses. These are part of
+     * the producing agency address, which is one of the contact details that
+     * can satisfy the mandatory producing agency contact information.
+     *
+     * @param producingAgencyElectronicMailAddresses the producing agency electronic mail addresses
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyElectronicMailAddresses(List<String> producingAgencyElectronicMailAddresses) {
+        this.producingAgencyElectronicMailAddresses = producingAgencyElectronicMailAddresses;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency city.
+     *
+     * @param producingAgencyCity the producing agency city
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyCity(String producingAgencyCity) {
+        this.producingAgencyCity = producingAgencyCity;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency administrative area.
+     *
+     * @param producingAgencyAdministrativeArea the producing agency administrative area
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyAdministrativeArea(String producingAgencyAdministrativeArea) {
+        this.producingAgencyAdministrativeArea = producingAgencyAdministrativeArea;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency postal code.
+     *
+     * @param producingAgencyPostalCode the producing agency postal code
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyPostalCode(String producingAgencyPostalCode) {
+        this.producingAgencyPostalCode = producingAgencyPostalCode;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency country.
+     *
+     * @param producingAgencyCountry the producing agency country
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyCountry(String producingAgencyCountry) {
+        this.producingAgencyCountry = producingAgencyCountry;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency online resource linkage. This is one of the
+     * contact details that can satisfy the mandatory producing agency contact
+     * information.
+     *
+     * @param producingAgencyOnlineResource the producing agency online resource linkage
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyOnlineResource(String producingAgencyOnlineResource) {
+        this.producingAgencyOnlineResource = producingAgencyOnlineResource;
+        return this;
+    }
+
+    /**
+     * Sets the producing agency contact instructions. This is one of the
+     * contact details that can satisfy the mandatory producing agency contact
+     * information.
+     *
+     * @param producingAgencyContactInstructions the producing agency contact instructions
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setProducingAgencyContactInstructions(String producingAgencyContactInstructions) {
+        this.producingAgencyContactInstructions = producingAgencyContactInstructions;
         return this;
     }
 
@@ -451,12 +578,21 @@ public class S100DatasetDiscoveryMetadataBuilder {
     }
 
     /**
-     * Sets maintenance frequency.
+     * Sets maintenance frequency. S-100 restricts the ISO 19115-1
+     * MD_MaintenanceFrequencyCode codelist used in the discovery metadata to
+     * the "asNeeded" and "irregular" values only, hence any other value will
+     * be rejected.
      *
      * @param maintenanceFrequency the maintenance frequency
      * @return the S-100 dataset discovery metadata builder
      */
     public S100DatasetDiscoveryMetadataBuilder setMaintenanceFrequency(MaintenanceFrequency maintenanceFrequency) {
+        if(Objects.nonNull(maintenanceFrequency) && !ALLOWED_MAINTENANCE_FREQUENCIES.contains(maintenanceFrequency)) {
+            throw new IllegalArgumentException(String.format("The maintenance frequency %s is not "
+                    + "allowed in the S-100 discovery metadata (S-100 Part 17, "
+                    + "MD_MaintenanceFrequencyCode: S-100 is restricted to only the asNeeded and "
+                    + "irregular values from the ISO 19115-1 codelist)", maintenanceFrequency.getValue()));
+        }
         this.maintenanceFrequency = maintenanceFrequency;
         return this;
     }
@@ -499,7 +635,9 @@ public class S100DatasetDiscoveryMetadataBuilder {
         metadata.setDescription(S100ExchangeSetUtils.createCharacterStringPropertyType(this.description));
         metadata.setCompressionFlag(this.compressionFlag);
         metadata.setDataProtection(this.dataProtection);
-        metadata.setProtectionScheme(S100ProtectionScheme.S_100_P_15);
+        // the protection scheme is optional (0..1) and only describes the
+        // method used when the data is actually protected
+        metadata.setProtectionScheme(this.protectionScheme);
         metadata.setCopyright(this.copyright);
         final S100ClassificationCodePropertyType s100ClassificationCodePropertyType = new S100ClassificationCodePropertyType();
         s100ClassificationCodePropertyType.setMDClassificationCode(Optional.ofNullable(this.classification)
@@ -521,7 +659,14 @@ public class S100DatasetDiscoveryMetadataBuilder {
         metadata.setIssueDate(this.issueDate);
         metadata.setIssueTime(this.issueTime);
         metadata.setBoundingBox(S100ExchangeSetUtils.createS100GeographicBoundingBoxType(this.boundingBox));
-        metadata.setTemporalExtent(null);
+        // the temporal extent is encoded if and only if at least one of the
+        // start and the end of the extent is known
+        if(Objects.nonNull(this.timeInstantBegin) || Objects.nonNull(this.timeInstantEnd)) {
+            final S100TemporalExtent temporalExtent = new S100TemporalExtent();
+            temporalExtent.setTimeInstantBegin(this.timeInstantBegin);
+            temporalExtent.setTimeInstantEnd(this.timeInstantEnd);
+            metadata.setTemporalExtent(temporalExtent);
+        }
         metadata.setProductSpecification(this.productSpecification);
         metadata.setProducerCode(this.producerCode);
         S100EncodingFormatPropertyType s100EncodingFormatPropertyType = new S100EncodingFormatPropertyType();
@@ -529,19 +674,35 @@ public class S100DatasetDiscoveryMetadataBuilder {
         metadata.setDataCoverages(S100ExchangeSetUtils.createS100DataCoverages(this.dataCoverages));
         metadata.setEncodingFormat(s100EncodingFormatPropertyType);
         metadata.setComment(S100ExchangeSetUtils.createCharacterStringPropertyType(this.comment));
-        metadata.setReplacedData(false);
+        metadata.setReplacedData(this.replacedData);
         metadata.setNavigationPurposes(this.navigationPurposes);
 
-        // Responsible Authority
+        // Responsible Authority - the producing agency is mandatory (S-100
+        // Part 17, S100_DatasetDiscoveryMetadata: producingAgency Mult 1)
+        if(Objects.isNull(this.producingAgency)) {
+            throw new IllegalStateException("The producing agency of the dataset must be provided "
+                    + "(S-100 Part 17, S100_DatasetDiscoveryMetadata: producingAgency multiplicity 1)");
+        }
         final CIResponsibilityPropertyType ciResponsibilityPropertyType = new CIResponsibilityPropertyType();
         final CIResponsibilityType ciResponsibilityType = new CIResponsibilityType();
-        if(Objects.nonNull(this.producingAgency)) {
-            final CIOrganisationType ciOrganisationType = new CIOrganisationType();
-            ciOrganisationType.setName(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgency));
-            final AbstractCIPartyPropertyType abstractCIPartyPropertyType = new AbstractCIPartyPropertyType();
-            abstractCIPartyPropertyType.setAbstractCIParty(this.citObjectFactory.createCIOrganisation(ciOrganisationType));
-            ciResponsibilityType.setParties(Collections.singletonList(abstractCIPartyPropertyType));
+        final CIOrganisationType ciOrganisationType = new CIOrganisationType();
+        ciOrganisationType.setName(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgency));
+        // the organisation contact information is mandatory (S-100 Part 17,
+        // Table 17-3) and NOTE 2 requires at least one of the phone, address,
+        // onlineResource and contactInstructions attributes to be documented
+        final CIContactType ciContactType = this.createProducingAgencyContact();
+        if(Objects.isNull(ciContactType)) {
+            throw new IllegalStateException("The contact information of the producing agency must be "
+                    + "provided (S-100 Part 17, Table 17-3: CI_Organisation.contactInfo is mandatory "
+                    + "and NOTE 2 requires at least one of the CI_Contact phone, address, "
+                    + "onlineResource and contactInstructions attributes to be documented)");
         }
+        final CIContactPropertyType ciContactPropertyType = new CIContactPropertyType();
+        ciContactPropertyType.setCIContact(ciContactType);
+        ciOrganisationType.setContactInfos(Collections.singletonList(ciContactPropertyType));
+        final AbstractCIPartyPropertyType abstractCIPartyPropertyType = new AbstractCIPartyPropertyType();
+        abstractCIPartyPropertyType.setAbstractCIParty(this.citObjectFactory.createCIOrganisation(ciOrganisationType));
+        ciResponsibilityType.setParties(Collections.singletonList(abstractCIPartyPropertyType));
         if(Objects.nonNull(this.producingAgencyRole)) {
             final CIRoleCodePropertyType ciRoleCodePropertyType = new CIRoleCodePropertyType();
             ciRoleCodePropertyType.setCIRoleCode(this.producingAgencyRole.getCodeListValueType());
@@ -550,43 +711,72 @@ public class S100DatasetDiscoveryMetadataBuilder {
         ciResponsibilityPropertyType.setCIResponsibility(ciResponsibilityType);
         metadata.setProducingAgency(ciResponsibilityPropertyType);
 
-        // Maintenance information
-        final MDMaintenanceInformationPropertyType mdMaintenanceInformationPropertyType = new MDMaintenanceInformationPropertyType();
-        final MDMaintenanceInformationType mdMaintenanceInformationType = new MDMaintenanceInformationType();
-        if(Objects.nonNull(this.maintenanceFrequency)) {
-            final MDMaintenanceFrequencyCodePropertyType maintenanceAndUpdateFrequency = new MDMaintenanceFrequencyCodePropertyType();
-            maintenanceAndUpdateFrequency.setMDMaintenanceFrequencyCode(this.maintenanceFrequency.getCodeListValueType());
-            mdMaintenanceInformationType.setMaintenanceAndUpdateFrequency(maintenanceAndUpdateFrequency);
+        // Maintenance information - the resourceMaintenance role is optional
+        // (0..1) so it is only encoded when maintenance information is provided
+        if(Objects.nonNull(this.maintenanceFrequency) || Objects.nonNull(this.maintenanceDate) || Objects.nonNull(this.maintenancePeriod)) {
+            // S-100 Part 17, MD_MaintenanceInformation: "Exactly one of
+            // maintenanceDate and userDefinedMaintenanceFrequency must be
+            // populated"
+            if(Objects.nonNull(this.maintenanceDate) == Objects.nonNull(this.maintenancePeriod)) {
+                throw new IllegalStateException("Exactly one of the maintenance date and the maintenance "
+                        + "period must be provided for the resource maintenance information (S-100 Part 17, "
+                        + "MD_MaintenanceInformation: exactly one of maintenanceDate and "
+                        + "userDefinedMaintenanceFrequency must be populated)");
+            }
+            // S-100 Part 17, MD_MaintenanceInformation: the maintenance
+            // frequency "must be populated if userDefinedMaintenanceFrequency
+            // is not present", while asNeeded and irregular are "allowed if
+            // and only if userDefinedMaintenanceFrequency is not populated"
+            if(Objects.nonNull(this.maintenanceDate) && Objects.isNull(this.maintenanceFrequency)) {
+                throw new IllegalStateException("The maintenance frequency must be provided alongside the "
+                        + "maintenance date (S-100 Part 17, MD_MaintenanceInformation: "
+                        + "maintenanceAndUpdateFrequency must be populated if "
+                        + "userDefinedMaintenanceFrequency is not present)");
+            }
+            if(Objects.nonNull(this.maintenancePeriod) && Objects.nonNull(this.maintenanceFrequency)) {
+                throw new IllegalStateException("The maintenance frequency must not be provided alongside "
+                        + "the maintenance period (S-100 Part 17, MD_MaintenanceFrequencyCode: asNeeded "
+                        + "and irregular are allowed if and only if userDefinedMaintenanceFrequency is "
+                        + "not populated)");
+            }
+
+            final MDMaintenanceInformationPropertyType mdMaintenanceInformationPropertyType = new MDMaintenanceInformationPropertyType();
+            final MDMaintenanceInformationType mdMaintenanceInformationType = new MDMaintenanceInformationType();
+            if(Objects.nonNull(this.maintenanceFrequency)) {
+                final MDMaintenanceFrequencyCodePropertyType maintenanceAndUpdateFrequency = new MDMaintenanceFrequencyCodePropertyType();
+                maintenanceAndUpdateFrequency.setMDMaintenanceFrequencyCode(this.maintenanceFrequency.getCodeListValueType());
+                mdMaintenanceInformationType.setMaintenanceAndUpdateFrequency(maintenanceAndUpdateFrequency);
+            }
+            if(Objects.nonNull(this.maintenanceDate)) {
+                final AbstractTypedDatePropertyType abstractTypedDatePropertyType = new AbstractTypedDatePropertyType();
+                final CIDateType ciDateType = new CIDateType();
+                final DatePropertyType datePropertyType = new DatePropertyType();
+                datePropertyType.setDate(this.maintenanceDate);
+                ciDateType.setDate(datePropertyType);
+                // the dateType child is mandatory for cit:CI_Date
+                final CIDateTypeCodePropertyType ciDateTypeCodePropertyType = new CIDateTypeCodePropertyType();
+                ciDateTypeCodePropertyType.setCIDateTypeCode(S100ExchangeSetUtils.createCodeListValueType(
+                        "https://standards.iso.org/iso/19115/resources/Codelists/cat/codelists.xml",
+                        null,
+                        "nextUpdate",
+                        "nextUpdate"));
+                ciDateType.setDateType(ciDateTypeCodePropertyType);
+                // use the concrete cit:CI_Date element - the substitution group
+                // head mcc:Abstract_TypedDate is abstract and may not appear in
+                // instance documents
+                abstractTypedDatePropertyType.setAbstractTypedDate(
+                        this.citObjectFactory.createCIDate(ciDateType)
+                );
+                mdMaintenanceInformationType.setMaintenanceDates(Collections.singletonList(abstractTypedDatePropertyType));
+            }
+            if(Objects.nonNull(this.maintenancePeriod)) {
+                final TMPeriodDurationPropertyType userDefinedMaintenanceFrequency = new TMPeriodDurationPropertyType();
+                userDefinedMaintenanceFrequency.setTMPeriodDuration(this.maintenancePeriod);
+                mdMaintenanceInformationType.setUserDefinedMaintenanceFrequency(userDefinedMaintenanceFrequency);
+            }
+            mdMaintenanceInformationPropertyType.setMDMaintenanceInformation(mdMaintenanceInformationType);
+            metadata.setResourceMaintenance(mdMaintenanceInformationPropertyType);
         }
-        if(Objects.nonNull(this.maintenanceDate)) {
-            final AbstractTypedDatePropertyType abstractTypedDatePropertyType = new AbstractTypedDatePropertyType();
-            final CIDateType ciDateType = new CIDateType();
-            final DatePropertyType datePropertyType = new DatePropertyType();
-            datePropertyType.setDate(this.maintenanceDate);
-            ciDateType.setDate(datePropertyType);
-            // the dateType child is mandatory for cit:CI_Date
-            final CIDateTypeCodePropertyType ciDateTypeCodePropertyType = new CIDateTypeCodePropertyType();
-            ciDateTypeCodePropertyType.setCIDateTypeCode(S100ExchangeSetUtils.createCodeListValueType(
-                    "https://standards.iso.org/iso/19115/resources/Codelists/cat/codelists.xml",
-                    null,
-                    "nextUpdate",
-                    "nextUpdate"));
-            ciDateType.setDateType(ciDateTypeCodePropertyType);
-            // use the concrete cit:CI_Date element - the substitution group
-            // head mcc:Abstract_TypedDate is abstract and may not appear in
-            // instance documents
-            abstractTypedDatePropertyType.setAbstractTypedDate(
-                    this.citObjectFactory.createCIDate(ciDateType)
-            );
-            mdMaintenanceInformationType.setMaintenanceDates(Collections.singletonList(abstractTypedDatePropertyType));
-        }
-        if(Objects.nonNull(this.maintenancePeriod)) {
-            final TMPeriodDurationPropertyType userDefinedMaintenanceFrequency = new TMPeriodDurationPropertyType();
-            userDefinedMaintenanceFrequency.setTMPeriodDuration(this.maintenancePeriod);
-            mdMaintenanceInformationType.setUserDefinedMaintenanceFrequency(userDefinedMaintenanceFrequency);
-        }
-        mdMaintenanceInformationPropertyType.setMDMaintenanceInformation(mdMaintenanceInformationType);
-        metadata.setResourceMaintenance(mdMaintenanceInformationPropertyType);
 
         // Set the metadata date-stamp
         metadata.setMetadataDateStamp(Optional.ofNullable(this.metadataDateStamp)
@@ -595,9 +785,10 @@ public class S100DatasetDiscoveryMetadataBuilder {
         //====================================================================//
         //                        METADATA SIGNATURES                         //
         //====================================================================//
-        // First choose the signature reference to be used
+        // First choose the signature reference to be used - S-100 Part 15
+        // clause 15-8.7 mandates the "ECDSA-384-SHA2" encoding
         final S100SEDigitalSignatureReference signatureReference = Optional.ofNullable(this.digitalSignatureReference)
-                .orElse(S100SEDigitalSignatureReference.DSA);
+                .orElse(S100SEDigitalSignatureReference.ECDSA_384_SHA_2);
         // And populate the metadata
         final S100SEDigitalSignatureReferencePropertyType digitalSignatureReferencePropertyType = new S100SEDigitalSignatureReferencePropertyType();
         digitalSignatureReferencePropertyType.setValue(signatureReference);
@@ -617,12 +808,85 @@ public class S100DatasetDiscoveryMetadataBuilder {
             metadata.getDigitalSignatureValues().add(digitalSignatureValue);
         }
         // Or use the existing signatures if provided
-        else if(Objects.nonNull(this.digitalSignatureValues)) {
+        else if(Objects.nonNull(this.digitalSignatureValues) && !this.digitalSignatureValues.isEmpty()) {
             metadata.getDigitalSignatureValues().addAll(this.digitalSignatureValues);
+        }
+        // Otherwise the mandatory signature information cannot be generated
+        else {
+            throw new IllegalStateException("The dataset discovery metadata requires at least one digital "
+                    + "signature value (S-100 Part 17, S100_DatasetDiscoveryMetadata: digitalSignatureValue "
+                    + "multiplicity 1..*), so either a signature provider along with the dataset payload, or "
+                    + "the already generated signature values must be provided");
         }
         //====================================================================//
 
         // And return the constructed metadata object
         return metadata;
+    }
+
+    /**
+     * Constructs the contact information of the producing agency organisation
+     * based on the contact details provided to the builder. If none of the
+     * S-100 Part 17 Table 17-3 NOTE 2 contact details (phone, address,
+     * onlineResource and contactInstructions) is available, no contact
+     * information can be generated and a null value will be returned.
+     *
+     * @return the producing agency contact information, or null if not enough details are available
+     */
+    protected CIContactType createProducingAgencyContact() {
+        final CIContactType ciContactType = new CIContactType();
+        boolean documented = false;
+
+        // The phone details - the number is mandatory for cit:CI_Telephone
+        if(Objects.nonNull(this.producingAgencyPhone)) {
+            final CITelephoneType ciTelephoneType = new CITelephoneType();
+            ciTelephoneType.setNumber(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyPhone));
+            if(Objects.nonNull(this.producingAgencyPhoneType)) {
+                final CITelephoneTypeCodePropertyType ciTelephoneTypeCodePropertyType = new CITelephoneTypeCodePropertyType();
+                ciTelephoneTypeCodePropertyType.setCITelephoneTypeCode(this.producingAgencyPhoneType.getCodeListValueType());
+                ciTelephoneType.setNumberType(ciTelephoneTypeCodePropertyType);
+            }
+            final CITelephonePropertyType ciTelephonePropertyType = new CITelephonePropertyType();
+            ciTelephonePropertyType.setCITelephone(ciTelephoneType);
+            ciContactType.getPhones().add(ciTelephonePropertyType);
+            documented = true;
+        }
+
+        // The address details
+        if((Objects.nonNull(this.producingAgencyElectronicMailAddresses) && !this.producingAgencyElectronicMailAddresses.isEmpty())
+                || Objects.nonNull(this.producingAgencyCity)
+                || Objects.nonNull(this.producingAgencyAdministrativeArea)
+                || Objects.nonNull(this.producingAgencyPostalCode)
+                || Objects.nonNull(this.producingAgencyCountry)) {
+            final CIAddressType ciAddressType = new CIAddressType();
+            ciAddressType.setElectronicMailAddresses(S100ExchangeSetUtils.createCharacterStringPropertyTypeList(this.producingAgencyElectronicMailAddresses));
+            ciAddressType.setCity(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyCity));
+            ciAddressType.setAdministrativeArea(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyAdministrativeArea));
+            ciAddressType.setPostalCode(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyPostalCode));
+            ciAddressType.setCountry(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyCountry));
+            final CIAddressPropertyType ciAddressPropertyType = new CIAddressPropertyType();
+            ciAddressPropertyType.setCIAddress(ciAddressType);
+            ciContactType.getAddresses().add(ciAddressPropertyType);
+            documented = true;
+        }
+
+        // The online resource details
+        if(Objects.nonNull(this.producingAgencyOnlineResource)) {
+            final CIOnlineResourceType ciOnlineResourceType = new CIOnlineResourceType();
+            ciOnlineResourceType.setLinkage(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyOnlineResource));
+            final CIOnlineResourcePropertyType ciOnlineResourcePropertyType = new CIOnlineResourcePropertyType();
+            ciOnlineResourcePropertyType.setCIOnlineResource(ciOnlineResourceType);
+            ciContactType.getOnlineResources().add(ciOnlineResourcePropertyType);
+            documented = true;
+        }
+
+        // And the contact instructions
+        if(Objects.nonNull(this.producingAgencyContactInstructions)) {
+            ciContactType.setContactInstructions(S100ExchangeSetUtils.createCharacterStringPropertyType(this.producingAgencyContactInstructions));
+            documented = true;
+        }
+
+        // Only return the contact if at least one of the details was documented
+        return documented ? ciContactType : null;
     }
 }

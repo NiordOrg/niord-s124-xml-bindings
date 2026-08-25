@@ -185,7 +185,7 @@ class S100SupportFileDiscoveryMetadataBuilderTest {
         // Assess the signature
         assertNotNull(metadata.getDigitalSignatureReference());
         assertNotNull(metadata.getDigitalSignatureReference().getValue());
-        assertEquals(S100SEDigitalSignatureReference.DSA, metadata.getDigitalSignatureReference().getValue());
+        assertEquals(S100SEDigitalSignatureReference.ECDSA_384_SHA_2, metadata.getDigitalSignatureReference().getValue());
         assertNotNull(metadata.getDigitalSignatureValues());
         assertEquals(1, metadata.getDigitalSignatureValues().size());
         assertNotNull(metadata.getDigitalSignatureValues().get(0));
@@ -193,6 +193,28 @@ class S100SupportFileDiscoveryMetadataBuilderTest {
         assertNotNull(metadata.getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue());
         assertNotNull(metadata.getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue().getValue());
         assertEquals("signature".getBytes().length, metadata.getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue().getValue().length);
+    }
+
+    /**
+     * Test that the mandatory digital signature values will not be silently
+     * omitted when neither a signature provider with a payload nor the already
+     * generated signature values are available.
+     */
+    @Test
+    void testBuildRequiresDigitalSignatureValues() {
+        // No signature provider at all
+        final IllegalStateException noProvider = assertThrows(IllegalStateException.class,
+                () -> new S100SupportFileDiscoveryMetadataBuilder(null)
+                        .setFileName("file:/supportFile.XML")
+                        .build("supportFile".getBytes()));
+        assertTrue(noProvider.getMessage().contains("digitalSignatureValue multiplicity 1..*"));
+
+        // A signature provider but no payload to sign
+        final IllegalStateException noPayload = assertThrows(IllegalStateException.class,
+                () -> this.s100SupportFileDiscoveryMetadataBuilder
+                        .setFileName("file:/supportFile.XML")
+                        .build(null));
+        assertTrue(noPayload.getMessage().contains("digitalSignatureValue multiplicity 1..*"));
     }
 
 }

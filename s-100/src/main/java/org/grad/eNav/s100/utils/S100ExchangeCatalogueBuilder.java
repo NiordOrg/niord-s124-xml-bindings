@@ -27,6 +27,7 @@ import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -58,6 +59,7 @@ public class S100ExchangeCatalogueBuilder {
     protected List<S100ProductSpecification> productSpecifications;
 
     // Certificate Information
+    protected String schemeAdministrator;
     protected Map<String, X509Certificate> certificateMap;
 
     // Objects Factories
@@ -84,7 +86,10 @@ public class S100ExchangeCatalogueBuilder {
         this.objectFactory = new ObjectFactory();
         this.lanObjectFactory = new org.iso.standards.iso._19115.__3.lan._1.ObjectFactory();
 
-        // Initialise the certificates map
+        // Initialise the certificates map - the Scheme Administrator defaults
+        // to IHO which operates the single SA of the S-100 protection scheme
+        // (S-100 Part 15 clause 15-8.11.1)
+        this.schemeAdministrator = "IHO";
         this.certificateMap = new HashMap<>();
 
         // And initialise the metadata provider lists
@@ -259,6 +264,20 @@ public class S100ExchangeCatalogueBuilder {
     }
 
     /**
+     * Sets the identity of the Scheme Administrator of the S-100 protection
+     * scheme, i.e. the id under which the separately-installed SA root
+     * certificate is known. This defaults to "IHO" as per S-100 Part 15
+     * clause 15-8.11.1.
+     *
+     * @param schemeAdministrator the scheme administrator identity
+     * @return the S100 exchange set catalogue builder
+     */
+    public S100ExchangeCatalogueBuilder setSchemeAdministrator(String schemeAdministrator) {
+        this.schemeAdministrator = schemeAdministrator;
+        return this;
+    }
+
+    /**
      * Sets the exchange set certificates.
      *
      * @param certificateMap the certificates to be used
@@ -341,8 +360,11 @@ public class S100ExchangeCatalogueBuilder {
         final S100ExchangeCatalogueIdentifier exchangeCatalogueIdentifier = new S100ExchangeCatalogueIdentifier();
         exchangeCatalogueIdentifier.setIdentifier(
                 this.identifier);
+        // LocalDateTime fields are defined to carry UTC values so that the
+        // marshalled output matches the S-100 Part 17 yyyy-mm-ddThh:mm:ssZ
+        // format for the exchange catalogue creation dateTime
         exchangeCatalogueIdentifier.setDateTime(
-                Optional.ofNullable(this.dateTime).orElse(LocalDateTime.now()));
+                Optional.ofNullable(this.dateTime).orElseGet(() -> LocalDateTime.now(ZoneOffset.UTC)));
         exchangeCatalogue.setIdentifier(exchangeCatalogueIdentifier);
 
         // Create a UUID for this server from a constant string
@@ -391,20 +413,26 @@ public class S100ExchangeCatalogueBuilder {
         // ================================================================== //
         //                 Set the Certificate Information                    //
         // ================================================================== //
-        final S100SECertificateContainerType s100SECertificateContainerType = new S100SECertificateContainerType();
-        final S100SECertificateContainerType.SchemeAdministrator schemeAdministrator = new S100SECertificateContainerType.SchemeAdministrator();
-        schemeAdministrator.setId(this.organization);
-        s100SECertificateContainerType.setSchemeAdministrator(schemeAdministrator);
-        if(Objects.nonNull(this.certificateMap)) {
+        // The certificates element is optional but each container requires at
+        // least one certificate (S-100 Part 15 clause 15-8.11.1), so it is
+        // omitted altogether when no certificates have been provided
+        if(Objects.nonNull(this.certificateMap) && !this.certificateMap.isEmpty()) {
+            final S100SECertificateContainerType s100SECertificateContainerType = new S100SECertificateContainerType();
+            final S100SECertificateContainerType.SchemeAdministrator schemeAdministrator = new S100SECertificateContainerType.SchemeAdministrator();
+            schemeAdministrator.setId(this.schemeAdministrator);
+            s100SECertificateContainerType.setSchemeAdministrator(schemeAdministrator);
             for(Map.Entry<String, X509Certificate> certificateEntry : this.certificateMap.entrySet()) {
                 final S100SECertificateType certificateType = new S100SECertificateType();
                 certificateType.setId(certificateEntry.getKey());
-                certificateType.setIssuer(certificateEntry.getValue().getIssuerX500Principal().getName());
+                // The issuer attribute contains the id of the issuing element,
+                // by default the SA identified by the schemeAdministrator id
+                // (S-100 Part 15 clause 15-8.6)
+                certificateType.setIssuer(this.schemeAdministrator);
                 certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(certificateEntry.getValue()));
                 s100SECertificateContainerType.getCertificates().add(certificateType);
             }
+            exchangeCatalogue.getCertificates().add(s100SECertificateContainerType);
         }
-        exchangeCatalogue.getCertificates().add(s100SECertificateContainerType);
         // ================================================================== //
 
         // ================================================================== //

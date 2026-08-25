@@ -19,6 +19,8 @@ package org.grad.eNav.s100.adapters;
 import jakarta.xml.bind.annotation.adapters.XmlAdapter;
 
 import java.util.Arrays;
+import java.util.Locale;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -40,8 +42,10 @@ public class DoubleListAdapter extends XmlAdapter<String, Double[]> {
      */
     @Override
     public String marshal(Double[] doubleList) {
+        // Locale.ROOT guarantees the '.' decimal separator required by the
+        // xs:double lexical space, regardless of the JVM default locale
         return Stream.of(doubleList)
-                .map(d -> String.format("%.7f", d))
+                .map(d -> String.format(Locale.ROOT, "%.7f", d))
                 .collect(Collectors.joining(" "));
     }
 
@@ -53,8 +57,10 @@ public class DoubleListAdapter extends XmlAdapter<String, Double[]> {
      */
     @Override
     public Double[] unmarshal(String xml) {
-        // First parse all the coordinates
-        return Arrays.stream(xml.split("\\s"))
+        // First parse all the coordinates, tolerating leading/trailing
+        // whitespace and multi-space/newline separators
+        return Arrays.stream(xml.split("\\s+"))
+                .filter(Predicate.not(String::isEmpty))
                 .map(Double::parseDouble)
                 .toArray(Double[]::new);
     }

@@ -28,10 +28,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.Locale;
+import java.util.TimeZone;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -75,6 +78,8 @@ class S100ExchangeCatalogueBuilderTest {
     @Test
     void testConstructor() {
         assertNotNull(this.s100ExchangeCatalogueBuilder);
+        // The Scheme Administrator defaults to IHO - S-100 Part 15 cl. 15-8.11.1
+        assertEquals("IHO", this.s100ExchangeCatalogueBuilder.schemeAdministrator);
         assertNull(this.s100ExchangeCatalogueBuilder.identifier);
         assertNull(this.s100ExchangeCatalogueBuilder.dateTime);
         assertNull(this.s100ExchangeCatalogueBuilder.dataServerIdentifier);
@@ -114,7 +119,8 @@ class S100ExchangeCatalogueBuilderTest {
                 .setAdministrativeArea("adminArea")
                 .setDescription("description")
                 .setComment("comment")
-                .setProductSpecification(Collections.singletonList(new S100ProductSpecification()));
+                .setProductSpecification(Collections.singletonList(new S100ProductSpecification()))
+                .setSchemeAdministrator("root");
 
         // Assert that the builder arguments were correctly allocated
         assertNotNull(this.s100ExchangeCatalogueBuilder);
@@ -137,6 +143,7 @@ class S100ExchangeCatalogueBuilderTest {
         assertEquals("comment", this.s100ExchangeCatalogueBuilder.comment);
         assertNotNull(this.s100ExchangeCatalogueBuilder.productSpecifications);
         assertEquals(1, this.s100ExchangeCatalogueBuilder.electronicMailAddresses.size());
+        assertEquals("root", this.s100ExchangeCatalogueBuilder.schemeAdministrator);
         assertNotNull(this.s100ExchangeCatalogueBuilder.certificateMap);
     }
 
@@ -235,10 +242,15 @@ class S100ExchangeCatalogueBuilderTest {
         assertNotNull(exchangeCatalogue.getCertificates());
         assertEquals(1, exchangeCatalogue.getCertificates().size());
         assertNotNull(exchangeCatalogue.getCertificates().get(0));
+        // The scheme administrator id defaults to IHO and each certificate's
+        // issuer references it - S-100 Part 15 cl. 15-8.11.1 and 15-8.6
+        assertNotNull(exchangeCatalogue.getCertificates().get(0).getSchemeAdministrator());
+        assertEquals("IHO", exchangeCatalogue.getCertificates().get(0).getSchemeAdministrator().getId());
         assertNotNull(exchangeCatalogue.getCertificates().get(0).getCertificates());
         assertEquals(1, exchangeCatalogue.getCertificates().get(0).getCertificates().size());
         assertNotNull(exchangeCatalogue.getCertificates().get(0).getCertificates().get(0));
         assertEquals("CRT1", exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getId());
+        assertEquals("IHO", exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getIssuer());
         assertNotNull(exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getValue());
 
         // Assess the file metadata
@@ -256,5 +268,89 @@ class S100ExchangeCatalogueBuilderTest {
         assertNotNull(exchangeCatalogue.getCatalogueDiscoveryMetadata().getS100CatalogueDiscoveryMetadatas().get(0));
     }
 
+    /**
+     * Test that when no certificates have been provided, the certificates
+     * element is omitted altogether, since each certificate container requires
+     * at least one certificate as per S-100 Part 15 clause 15-8.11.1.
+     */
+    @Test
+    void testBuildWithoutCertificates() throws CertificateEncodingException, JAXBException {
+        // Perform the setting operations without any certificates
+        S100ExchangeCatalogue exchangeCatalogue = this.s100ExchangeCatalogueBuilder
+                .setIdentifier("identifier")
+                .setDateTime(LocalDateTime.parse("2023-01-01T00:00:00.000", this.dateTimeFormat))
+                .setOrganization("organisation")
+                .setLocales(Collections.singletonList(Locale.UK))
+                .build();
+
+        // Assert that no certificate containers were generated
+        assertNotNull(exchangeCatalogue);
+        assertNotNull(exchangeCatalogue.getCertificates());
+        assertTrue(exchangeCatalogue.getCertificates().isEmpty());
+    }
+
+    /**
+     * Test that the scheme administrator identity can be overridden and will
+     * then be used both for the schemeAdministrator id and as the default
+     * issuer of the included certificates.
+     */
+    @Test
+    void testBuildWithCustomSchemeAdministrator() throws IOException, CertificateException, JAXBException {
+        // Load an X.509 certificate
+        final InputStream in = ClassLoader.getSystemResourceAsStream("test.pem");
+        assertNotNull(in);
+        final String inString = new String(in.readAllBytes(), StandardCharsets.UTF_8)
+                .replaceAll("-----BEGIN CERTIFICATE-----","")
+                .replaceAll("-----END CERTIFICATE-----","")
+                .replaceAll(System.lineSeparator(),"");
+        final X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(inString);
+
+        // Perform the setting operations with a custom scheme administrator
+        S100ExchangeCatalogue exchangeCatalogue = this.s100ExchangeCatalogueBuilder
+                .setIdentifier("identifier")
+                .setDateTime(LocalDateTime.parse("2023-01-01T00:00:00.000", this.dateTimeFormat))
+                .setOrganization("organisation")
+                .setLocales(Collections.singletonList(Locale.UK))
+                .setSchemeAdministrator("root")
+                .setCertificates(Collections.singletonMap("CRT1", certificate))
+                .build();
+
+        // Assert that the custom scheme administrator id was used throughout
+        assertNotNull(exchangeCatalogue);
+        assertNotNull(exchangeCatalogue.getCertificates());
+        assertEquals(1, exchangeCatalogue.getCertificates().size());
+        assertEquals("root", exchangeCatalogue.getCertificates().get(0).getSchemeAdministrator().getId());
+        assertEquals(1, exchangeCatalogue.getCertificates().get(0).getCertificates().size());
+        assertEquals("root", exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getIssuer());
+    }
+
+    /**
+     * Test that when no dateTime has been provided, the generated exchange
+     * catalogue identifier is stamped with the current UTC time, so that it
+     * marshals in the S-100 Part 17 yyyy-mm-ddThh:mm:ssZ format.
+     */
+    @Test
+    void testBuildDefaultDateTimeIsUtc() throws CertificateEncodingException, JAXBException {
+        // Run with a non-UTC default zone so that the UTC stamping shows up
+        final TimeZone defaultTimeZone = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("Pacific/Kiritimati"));
+
+            // Perform the setting operations without a dateTime
+            S100ExchangeCatalogue exchangeCatalogue = this.s100ExchangeCatalogueBuilder
+                    .setIdentifier("identifier")
+                    .setOrganization("organisation")
+                    .setLocales(Collections.singletonList(Locale.UK))
+                    .build();
+
+            // Assert that the default dateTime is the current UTC time
+            assertNotNull(exchangeCatalogue);
+            assertNotNull(exchangeCatalogue.getIdentifier().getDateTime());
+            final Duration offset = Duration.between(exchangeCatalogue.getIdentifier().getDateTime(), LocalDateTime.now(ZoneOffset.UTC)).abs();
+            assertTrue(offset.compareTo(Duration.ofMinutes(1)) < 0);
+        } finally {
+            TimeZone.setDefault(defaultTimeZone);
+        }
+    }
 
 }

@@ -28,15 +28,15 @@ class DateTimeAdapterTest {
     private final DateTimeAdapter dateTimeAdapter = new DateTimeAdapter();
 
     /**
-     * Test that date-times are marshalled in the extended ISO-8601 form
-     * required by the xs:dateTime lexical space, always including the seconds
-     * field.
+     * Test that date-times are marshalled in the S-100 Part 17 form
+     * yyyy-mm-ddThh:mm:ssZ, i.e. the extended ISO-8601 form with the seconds
+     * field and the zone designator of the UTC values these bindings carry.
      */
     @Test
-    void testMarshalUsesExtendedIsoForm() {
-        assertEquals("2026-01-15T09:30:15", this.dateTimeAdapter.marshal(LocalDateTime.of(2026, 1, 15, 9, 30, 15)));
+    void testMarshalUsesUtcExtendedIsoForm() {
+        assertEquals("2026-01-15T09:30:15Z", this.dateTimeAdapter.marshal(LocalDateTime.of(2026, 1, 15, 9, 30, 15)));
         // whole minutes must not drop the mandatory seconds field
-        assertEquals("2026-01-15T09:30:00", this.dateTimeAdapter.marshal(LocalDateTime.of(2026, 1, 15, 9, 30)));
+        assertEquals("2026-01-15T09:30:00Z", this.dateTimeAdapter.marshal(LocalDateTime.of(2026, 1, 15, 9, 30)));
     }
 
     /**
@@ -50,6 +50,25 @@ class DateTimeAdapterTest {
     }
 
     /**
+     * Test that an explicit zone offset is converted to UTC, since the bound
+     * LocalDateTime values are defined to carry UTC.
+     */
+    @Test
+    void testUnmarshalNormalisesOffsetsToUtc() {
+        assertEquals(LocalDateTime.of(2026, 1, 15, 7, 30, 15), this.dateTimeAdapter.unmarshal("2026-01-15T09:30:15+02:00"));
+        assertEquals(LocalDateTime.of(2026, 1, 15, 14, 30, 15), this.dateTimeAdapter.unmarshal("2026-01-15T09:30:15-05:00"));
+    }
+
+    /**
+     * Test that a marshalled date-time is unmarshalled back to the same value.
+     */
+    @Test
+    void testMarshalUnmarshalRoundTrip() {
+        final LocalDateTime dateTime = LocalDateTime.of(2026, 1, 15, 9, 30, 15);
+        assertEquals(dateTime, this.dateTimeAdapter.unmarshal(this.dateTimeAdapter.marshal(dateTime)));
+    }
+
+    /**
      * Test that the legacy basic form produced by earlier versions of these
      * bindings is still accepted when unmarshalling, with and without the
      * optional offset.
@@ -58,6 +77,7 @@ class DateTimeAdapterTest {
     void testUnmarshalAcceptsLegacyBasicForm() {
         assertEquals(LocalDateTime.of(2026, 1, 15, 9, 30, 15), this.dateTimeAdapter.unmarshal("20260115T093015"));
         assertEquals(LocalDateTime.of(2026, 1, 15, 9, 30, 15), this.dateTimeAdapter.unmarshal("20260115T093015Z"));
+        assertEquals(LocalDateTime.of(2026, 1, 15, 7, 30, 15), this.dateTimeAdapter.unmarshal("20260115T093015+0200"));
     }
 
 }

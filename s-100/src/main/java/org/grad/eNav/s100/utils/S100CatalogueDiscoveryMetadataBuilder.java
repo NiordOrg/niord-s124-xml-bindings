@@ -21,10 +21,12 @@ import org.iso.standards.iso._19115.__3.lan._1.PTLocalePropertyType;
 
 import java.math.BigInteger;
 import java.time.LocalDate;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The S100 Support File Discovery Metadata Builder Class.
@@ -35,6 +37,10 @@ import java.util.Optional;
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
 public class S100CatalogueDiscoveryMetadataBuilder {
+
+    // The only S100_Purpose values allowed for Catalogues by S-100 Part 17
+    private static final Set<S100Purpose> ALLOWED_PURPOSES =
+            EnumSet.of(S100Purpose.NEW_EDITION, S100Purpose.CANCELLATION);
 
     // Class Variables
     protected String fileName;
@@ -83,12 +89,19 @@ public class S100CatalogueDiscoveryMetadataBuilder {
     }
 
     /**
-     * Sets purpose.
+     * Sets purpose. The purpose of a Catalogue is restricted by S-100 to the
+     * new edition and cancellation values, hence any other value will be
+     * rejected.
      *
      * @param purpose the purpose
      * @return the S-100 catalogue discovery metadata builder
      */
     public S100CatalogueDiscoveryMetadataBuilder setPurpose(S100Purpose purpose) {
+        if(Objects.nonNull(purpose) && !ALLOWED_PURPOSES.contains(purpose)) {
+            throw new IllegalArgumentException(String.format("The purpose %s is not allowed for the "
+                    + "catalogue discovery metadata (S-100 Part 17, S100_CatalogueDiscoveryMetadata: "
+                    + "the purpose values must be one of new edition and cancellation)", purpose.value()));
+        }
         this.purpose = purpose;
         return this;
     }
@@ -245,9 +258,10 @@ public class S100CatalogueDiscoveryMetadataBuilder {
         //====================================================================//
         //                        METADATA SIGNATURES                         //
         //====================================================================//
-        // First choose the signature reference to be used
+        // First choose the signature reference to be used - S-100 Part 15
+        // clause 15-8.7 mandates the "ECDSA-384-SHA2" encoding
         final S100SEDigitalSignatureReference signatureReference = Optional.ofNullable(this.digitalSignatureReference)
-                .orElse(S100SEDigitalSignatureReference.DSA);
+                .orElse(S100SEDigitalSignatureReference.ECDSA_384_SHA_2);
         // And populate the metadata
         final S100SEDigitalSignatureReferencePropertyType digitalSignatureReferencePropertyType = new S100SEDigitalSignatureReferencePropertyType();
         digitalSignatureReferencePropertyType.setValue(signatureReference);
@@ -267,8 +281,15 @@ public class S100CatalogueDiscoveryMetadataBuilder {
             metadata.getDigitalSignatureValues().add(digitalSignatureValue);
         }
         // Or use the existing signatures if provided
-        else if(Objects.nonNull(this.digitalSignatureValues)) {
+        else if(Objects.nonNull(this.digitalSignatureValues) && !this.digitalSignatureValues.isEmpty()) {
             metadata.getDigitalSignatureValues().addAll(this.digitalSignatureValues);
+        }
+        // Otherwise the mandatory signature information cannot be generated
+        else {
+            throw new IllegalStateException("The catalogue discovery metadata requires at least one digital "
+                    + "signature value (S-100 Part 17, S100_CatalogueDiscoveryMetadata: digitalSignatureValue "
+                    + "multiplicity 1..*), so either a signature provider along with the catalogue payload, or "
+                    + "the already generated signature values must be provided");
         }
         //====================================================================//
 

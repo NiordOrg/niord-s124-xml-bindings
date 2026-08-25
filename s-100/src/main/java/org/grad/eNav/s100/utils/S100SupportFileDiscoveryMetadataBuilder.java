@@ -298,16 +298,17 @@ public class S100SupportFileDiscoveryMetadataBuilder {
         //====================================================================//
         //                        METADATA SIGNATURES                         //
         //====================================================================//
-        // First choose the signature reference to be used
+        // First choose the signature reference to be used - S-100 Part 15
+        // clause 15-8.7 mandates the "ECDSA-384-SHA2" encoding
         final S100SEDigitalSignatureReference signatureReference = Optional.ofNullable(this.digitalSignatureReference)
-                .orElse(S100SEDigitalSignatureReference.DSA);
+                .orElse(S100SEDigitalSignatureReference.ECDSA_384_SHA_2);
         // And populate the metadata
         final S100SEDigitalSignatureReferencePropertyType digitalSignatureReferencePropertyType = new S100SEDigitalSignatureReferencePropertyType();
         digitalSignatureReferencePropertyType.setValue(signatureReference);
         metadata.setDigitalSignatureReference(digitalSignatureReferencePropertyType);
 
         // Sign the dataset file if a provider detected
-        if(Objects.nonNull(this.signatureProvider)) {
+        if(Objects.nonNull(this.signatureProvider) && Objects.nonNull(payload)) {
             // Generate the signature
             final S100SEDigitalSignature signature = this.signatureProvider.generateSignature(
                     this.fileName,
@@ -320,8 +321,15 @@ public class S100SupportFileDiscoveryMetadataBuilder {
             metadata.getDigitalSignatureValues().add(digitalSignatureValue);
         }
         // Or use the existing signatures if provided
-        else if(Objects.nonNull(this.digitalSignatureValues)) {
+        else if(Objects.nonNull(this.digitalSignatureValues) && !this.digitalSignatureValues.isEmpty()) {
             metadata.getDigitalSignatureValues().addAll(this.digitalSignatureValues);
+        }
+        // Otherwise the mandatory signature information cannot be generated
+        else {
+            throw new IllegalStateException("The support file discovery metadata requires at least one digital "
+                    + "signature value (S-100 Part 17, S100_SupportFileDiscoveryMetadata: digitalSignatureValue "
+                    + "multiplicity 1..*), so either a signature provider along with the support file payload, or "
+                    + "the already generated signature values must be provided");
         }
         //====================================================================//
 

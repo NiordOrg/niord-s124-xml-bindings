@@ -163,9 +163,9 @@ class S100CatalogueDiscoveryMetadataBuilderTest {
         assertNotNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getLanguage());
         assertNotNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getLanguage().getLanguageCode());
         assertEquals(Locale.ENGLISH.getDisplayLanguage(), metadata.getOtherLocales().get(0).getPTLocale().getValue().getLanguage().getLanguageCode().getValue());
-        assertNotNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getCountry());
-        assertNotNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getCountry().getCountryCode());
-        assertEquals(Locale.ENGLISH.getDisplayCountry(), metadata.getOtherLocales().get(0).getPTLocale().getValue().getCountry().getCountryCode().getValue());
+        // Locales without a country omit the optional PT_Locale country, which
+        // could otherwise not carry the required ISO 3166-1 2-letter code
+        assertNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getCountry());
         assertNotNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getCharacterEncoding());
         assertNotNull(metadata.getOtherLocales().get(0).getPTLocale().getValue().getCharacterEncoding().getMDCharacterSetCode());
         assertEquals(StandardCharsets.UTF_8.displayName(), metadata.getOtherLocales().get(0).getPTLocale().getValue().getCharacterEncoding().getMDCharacterSetCode().getValue());
@@ -173,7 +173,7 @@ class S100CatalogueDiscoveryMetadataBuilderTest {
         // Assess the signature
         assertNotNull(metadata.getDigitalSignatureReference());
         assertNotNull(metadata.getDigitalSignatureReference().getValue());
-        assertEquals(S100SEDigitalSignatureReference.DSA, metadata.getDigitalSignatureReference().getValue());
+        assertEquals(S100SEDigitalSignatureReference.ECDSA_384_SHA_2, metadata.getDigitalSignatureReference().getValue());
         assertNotNull(metadata.getDigitalSignatureValues());
         assertEquals(1, metadata.getDigitalSignatureValues().size());
         assertNotNull(metadata.getDigitalSignatureValues().get(0));
@@ -181,5 +181,45 @@ class S100CatalogueDiscoveryMetadataBuilderTest {
         assertNotNull(metadata.getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue());
         assertNotNull(metadata.getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue().getValue());
         assertEquals("signature".getBytes().length, metadata.getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue().getValue().length);
+    }
+
+    /**
+     * Test that only the purpose values allowed for the S-100 Catalogues, i.e.
+     * the new edition and the cancellation ones, will be accepted.
+     */
+    @Test
+    void testSetPurposeRestrictedToCatalogueValues() {
+        final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> this.s100CatalogueDiscoveryMetadataBuilder.setPurpose(S100Purpose.NEW_DATASET));
+
+        assertTrue(exception.getMessage().contains("newDataset"));
+        assertTrue(exception.getMessage().contains("new edition and cancellation"));
+
+        // While the allowed values are accepted
+        assertDoesNotThrow(() -> this.s100CatalogueDiscoveryMetadataBuilder.setPurpose(S100Purpose.NEW_EDITION));
+        assertDoesNotThrow(() -> this.s100CatalogueDiscoveryMetadataBuilder.setPurpose(S100Purpose.CANCELLATION));
+        assertDoesNotThrow(() -> this.s100CatalogueDiscoveryMetadataBuilder.setPurpose(null));
+    }
+
+    /**
+     * Test that the mandatory digital signature values will not be silently
+     * omitted when neither a signature provider with a payload nor the already
+     * generated signature values are available.
+     */
+    @Test
+    void testBuildRequiresDigitalSignatureValues() {
+        // No signature provider at all
+        final IllegalStateException noProvider = assertThrows(IllegalStateException.class,
+                () -> new S100CatalogueDiscoveryMetadataBuilder(null)
+                        .setFileName("file:/catalogue.XML")
+                        .build("catalogue".getBytes()));
+        assertTrue(noProvider.getMessage().contains("digitalSignatureValue multiplicity 1..*"));
+
+        // A signature provider but no payload to sign
+        final IllegalStateException noPayload = assertThrows(IllegalStateException.class,
+                () -> this.s100CatalogueDiscoveryMetadataBuilder
+                        .setFileName("file:/catalogue.XML")
+                        .build(null));
+        assertTrue(noPayload.getMessage().contains("digitalSignatureValue multiplicity 1..*"));
     }
 }

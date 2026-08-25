@@ -38,7 +38,6 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -167,6 +166,10 @@ class S100ExchangeSetUtilsTest {
                         .setProductSpecification(s100ProductSpecification)
                         .setProducingAgency("producingAgency")
                         .setProducingAgencyRole(RoleCode.ORIGINATOR)
+                        // the producing agency contact information is mandatory
+                        // (S-100 Part 17, Table 17-3)
+                        .setProducingAgencyPhone("+44 1255 245000")
+                        .setProducingAgencyElectronicMailAddresses(Collections.singletonList("test@gla-rad.org"))
                         .setProducerCode("producerCode")
                         .setEncodingFormat(S100EncodingFormat.GML)
                         .setDataCoverages(this.geometry)
@@ -174,9 +177,11 @@ class S100ExchangeSetUtilsTest {
                         .setMetadataDateStamp(LocalDate.parse("2023-01-03", this.dateFormat))
                         .setReplacedData(false)
                         .setNavigationPurposes(Collections.singletonList(S100NavigationPurpose.OVERVIEW))
-                        .setMaintenanceFrequency(MaintenanceFrequency.CONTINUAL)
+                        // S-100 allows only the asNeeded and irregular
+                        // frequencies, and exactly one of the maintenance date
+                        // and the maintenance period
+                        .setMaintenanceFrequency(MaintenanceFrequency.AS_NEEDED)
                         .setMaintenanceDate(LocalDate.parse("2023-01-04", this.dateFormat))
-                        .setMaintenancePeriod(Duration.ofDays(100))
                         .build("dataset".getBytes()))
                 .build();
     }
@@ -300,12 +305,31 @@ class S100ExchangeSetUtilsTest {
         assertNotNull(ptLocaleType.getLanguage());
         assertNotNull(ptLocaleType.getLanguage().getLanguageCode());
         assertEquals(Locale.UK.getDisplayLanguage(), ptLocaleType.getLanguage().getLanguageCode().getValue());
+        assertEquals(Locale.UK.getISO3Language(), ptLocaleType.getLanguage().getLanguageCode().getCodeListValue());
         assertNotNull(ptLocaleType.getCountry());
         assertNotNull(ptLocaleType.getCountry().getCountryCode());
         assertEquals(Locale.UK.getDisplayCountry(), ptLocaleType.getCountry().getCountryCode().getValue());
+        // S-100 Part 17 PT_Locale requires the ISO 3166-1 2-letter country code
+        assertEquals("GB", ptLocaleType.getCountry().getCountryCode().getCodeListValue());
         assertNotNull(ptLocaleType.getCharacterEncoding());
         assertNotNull(ptLocaleType.getCharacterEncoding().getMDCharacterSetCode());
         assertEquals(StandardCharsets.UTF_8.displayName(), ptLocaleType.getCharacterEncoding().getMDCharacterSetCode().getValue());
+    }
+
+    /**
+     * Test that for a Java Locale without a country, the optional PT_Locale
+     * country element is omitted, rather than being populated with an empty
+     * country code.
+     */
+    @Test
+    void testCreatePTLocaleTypeWithoutCountry() {
+        // Generate the S-100 PT Locale Type
+        final PTLocaleType ptLocaleType = S100ExchangeSetUtils.createPTLocaleType(Locale.ENGLISH);
+
+        // Assess the result
+        assertNotNull(ptLocaleType);
+        assertNotNull(ptLocaleType.getLanguage());
+        assertNull(ptLocaleType.getCountry());
     }
 
     /**
@@ -362,6 +386,10 @@ class S100ExchangeSetUtilsTest {
     /**
      * Test that we can successfully generate a geographical data coverage
      * description in S-100 if we provide a valid geometry.
+     * <p/>
+     * S-100 Part 17, S100_DataCoverage NOTE 1 requires a single GML polygon
+     * with an identifier, whose exterior is a linear ring of a closed sequence
+     * of at least 4 EPSG:4326 (latitude, longitude) positions.
      */
     @Test
     void testCreateS100DataCoverages() {
@@ -373,7 +401,6 @@ class S100ExchangeSetUtilsTest {
         assertEquals(1, dataCoverage.size());
         assertNotNull(dataCoverage.get(0));
         assertNotNull(dataCoverage.get(0).getBoundingPolygon());
-        assertNotNull(dataCoverage.get(0).getBoundingPolygon());
         assertNotNull(dataCoverage.get(0).getBoundingPolygon().getPolygons());
         assertEquals(1, dataCoverage.get(0).getBoundingPolygon().getPolygons().size());
         assertNotNull(dataCoverage.get(0).getBoundingPolygon().getPolygons().get(0));
@@ -383,43 +410,139 @@ class S100ExchangeSetUtilsTest {
 
         // Now investigate the polygon itself
         PolygonType polygonType = (PolygonType) dataCoverage.get(0).getBoundingPolygon().getPolygons().get(0).getAbstractGeometry().getValue();
+        assertNotNull(polygonType.getId());
+        assertTrue(polygonType.getId().startsWith(S100ExchangeSetUtils.BOUNDING_POLYGON_ID_PREFIX));
+        assertEquals(BigInteger.TWO, polygonType.getSrsDimension());
         assertNotNull(polygonType.getExterior());
         assertNotNull(polygonType.getExterior().getAbstractRing());
         assertNotNull(polygonType.getExterior().getAbstractRing().getValue());
-        assertTrue(polygonType.getExterior().getAbstractRing().getValue() instanceof RingType);
+        assertTrue(polygonType.getExterior().getAbstractRing().getValue() instanceof LinearRingType);
+        assertTrue(polygonType.getInteriors().isEmpty());
 
-        // Then investigate the ring type
-        RingType ringType = (RingType)polygonType.getExterior().getAbstractRing().getValue();
-        assertEquals(AggregationType.SEQUENCE, ringType.getAggregationType());
-        assertNotNull(ringType.getCurveMembers());
-        assertEquals(1, ringType.getCurveMembers().size());
-        assertNotNull(ringType.getCurveMembers().get(0));
-        assertNotNull(ringType.getCurveMembers().get(0).getAbstractCurve());
-        assertNotNull(ringType.getCurveMembers().get(0).getAbstractCurve().getValue());
-        assertTrue(ringType.getCurveMembers().get(0).getAbstractCurve().getValue() instanceof CurveType);
-
-        // Then investigate the curve
-        CurveType curveType = (CurveType) ringType.getCurveMembers().get(0).getAbstractCurve().getValue();
-        assertNotNull(curveType.getSegments());
-        assertNotNull(curveType.getSegments().getAbstractCurveSegments());
-        assertEquals(5, curveType.getSegments().getAbstractCurveSegments().size());
-
-        // Finally investigate all the segments
-        for(int i=0; i < curveType.getSegments().getAbstractCurveSegments().size(); i++){
-            assertNotNull(curveType.getSegments().getAbstractCurveSegments().get(i).getValue());
-            assertTrue(curveType.getSegments().getAbstractCurveSegments().get(i).getValue() instanceof LineStringSegmentType);
-
-            // Invertigate each individual line segment
-            LineStringSegmentType lineStringSegmentType = (LineStringSegmentType) curveType.getSegments().getAbstractCurveSegments().get(i).getValue();
-            assertNotNull(lineStringSegmentType.getPosList());
-            assertNotNull(lineStringSegmentType.getPosList().getValue());
-            assertEquals(2, lineStringSegmentType.getPosList().getValue().length);
-            assertEquals(geometry.getCoordinates()[i].getX(), lineStringSegmentType.getPosList().getValue()[0]);
-            assertEquals(geometry.getCoordinates()[i].getY(), lineStringSegmentType.getPosList().getValue()[1]);
+        // Then investigate the exterior linear ring, which should contain all
+        // the geometry coordinates in a single latitude/longitude position list
+        LinearRingType linearRingType = (LinearRingType) polygonType.getExterior().getAbstractRing().getValue();
+        assertNotNull(linearRingType.getPosList());
+        assertNotNull(linearRingType.getPosList().getValue());
+        assertEquals(2 * this.geometry.getCoordinates().length, linearRingType.getPosList().getValue().length);
+        for(int i=0; i < this.geometry.getCoordinates().length; i++) {
+            assertEquals(this.geometry.getCoordinates()[i].getY(), linearRingType.getPosList().getValue()[2*i]);
+            assertEquals(this.geometry.getCoordinates()[i].getX(), linearRingType.getPosList().getValue()[2*i + 1]);
         }
+    }
 
-        // And finally investigate the curve property type
-        //CurvePropertyType
+    /**
+     * Test that the holes of a polygon are encoded as separate interior linear
+     * rings and are never fused into the exterior one.
+     */
+    @Test
+    void testCreateS100DataCoveragesWithInteriorRings() {
+        // Create a polygon with a hole in it
+        final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        final LinearRing shell = geometryFactory.createLinearRing(new Coordinate[]{
+                new Coordinate(0, 0),
+                new Coordinate(10, 0),
+                new Coordinate(10, 10),
+                new Coordinate(0, 10),
+                new Coordinate(0, 0),
+        });
+        final LinearRing hole = geometryFactory.createLinearRing(new Coordinate[]{
+                new Coordinate(2, 2),
+                new Coordinate(4, 2),
+                new Coordinate(4, 4),
+                new Coordinate(2, 4),
+                new Coordinate(2, 2),
+        });
+        final Polygon polygon = geometryFactory.createPolygon(shell, new LinearRing[]{hole});
+
+        // Generate the data coverage
+        final List<S100DataCoverage> dataCoverage = S100ExchangeSetUtils.createS100DataCoverages(polygon);
+
+        // Assess the result
+        assertNotNull(dataCoverage);
+        assertEquals(1, dataCoverage.size());
+        final PolygonType polygonType = (PolygonType) dataCoverage.get(0).getBoundingPolygon().getPolygons().get(0).getAbstractGeometry().getValue();
+
+        // The exterior should only contain the shell coordinates
+        final LinearRingType exterior = (LinearRingType) polygonType.getExterior().getAbstractRing().getValue();
+        assertArrayEquals(new Double[]{0.0, 0.0, 0.0, 10.0, 10.0, 10.0, 10.0, 0.0, 0.0, 0.0},
+                exterior.getPosList().getValue());
+
+        // And the hole should be provided as a separate interior linear ring
+        assertEquals(1, polygonType.getInteriors().size());
+        assertTrue(polygonType.getInteriors().get(0).getAbstractRing().getValue() instanceof LinearRingType);
+        final LinearRingType interior = (LinearRingType) polygonType.getInteriors().get(0).getAbstractRing().getValue();
+        assertArrayEquals(new Double[]{2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0, 2.0, 2.0, 2.0},
+                interior.getPosList().getValue());
+    }
+
+    /**
+     * Test that non-polygonal geometries, which cannot provide a closed
+     * sequence of at least 4 positions on their own, are described by their
+     * envelope.
+     */
+    @Test
+    void testCreateS100DataCoveragesForNonPolygons() {
+        // Create a simple line string
+        final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        final LineString lineString = geometryFactory.createLineString(new Coordinate[]{
+                new Coordinate(0, 0),
+                new Coordinate(10, 20),
+        });
+
+        // Generate the data coverage
+        final List<S100DataCoverage> dataCoverage = S100ExchangeSetUtils.createS100DataCoverages(lineString);
+
+        // Assess the result - the envelope rectangle in latitude/longitude order
+        assertNotNull(dataCoverage);
+        assertEquals(1, dataCoverage.size());
+        final PolygonType polygonType = (PolygonType) dataCoverage.get(0).getBoundingPolygon().getPolygons().get(0).getAbstractGeometry().getValue();
+        final LinearRingType exterior = (LinearRingType) polygonType.getExterior().getAbstractRing().getValue();
+        assertArrayEquals(new Double[]{0.0, 0.0, 0.0, 10.0, 20.0, 10.0, 20.0, 0.0, 0.0, 0.0},
+                exterior.getPosList().getValue());
+    }
+
+    /**
+     * Test that each component of a geometry collection generates its own data
+     * coverage entry, with its own unique GML polygon identifier.
+     */
+    @Test
+    void testCreateS100DataCoveragesForCollections() {
+        // Create a multi-polygon out of two copies of the test geometry
+        final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        final MultiPolygon multiPolygon = geometryFactory.createMultiPolygon(new Polygon[]{
+                (Polygon) this.geometry,
+                (Polygon) this.geometry.copy()
+        });
+
+        // Generate the data coverage
+        final List<S100DataCoverage> dataCoverage = S100ExchangeSetUtils.createS100DataCoverages(multiPolygon);
+
+        // Assess the result
+        assertNotNull(dataCoverage);
+        assertEquals(2, dataCoverage.size());
+        final PolygonType first = (PolygonType) dataCoverage.get(0).getBoundingPolygon().getPolygons().get(0).getAbstractGeometry().getValue();
+        final PolygonType second = (PolygonType) dataCoverage.get(1).getBoundingPolygon().getPolygons().get(0).getAbstractGeometry().getValue();
+        assertNotNull(first.getId());
+        assertNotNull(second.getId());
+        assertNotEquals(first.getId(), second.getId());
+    }
+
+    /**
+     * Test that geometries which cannot provide a conformant bounding polygon
+     * are rejected, instead of generating a non-conformant ring.
+     */
+    @Test
+    void testCreateS100DataCoveragesForEmptyGeometries() {
+        final GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+
+        // An empty polygon cannot provide the required exterior ring
+        assertThrows(IllegalArgumentException.class, () ->
+                S100ExchangeSetUtils.createS100DataCoverages(geometryFactory.createPolygon()));
+
+        // And neither can an empty geometry provide an envelope
+        assertThrows(IllegalArgumentException.class, () ->
+                S100ExchangeSetUtils.createS100DataCoverages(geometryFactory.createPoint()));
     }
 
     /**
@@ -449,13 +572,16 @@ class S100ExchangeSetUtilsTest {
 
             // The marshalling operation ofter messes up the namespace order so
             // we might as well remove it before we continue with the one-to-one
-            // matching
+            // matching. The bounding polygon GML identifiers are also unique
+            // per JVM, so they are normalised as well.
             String s100ExchangeSetXmlWithoutNamespaces = this.s100ExchangeSetXml
                     .replaceAll("S100_ExchangeCatalogue .+>","S100_ExchangeCatalogue>")
-                    .replaceAll("ns\\d+:","");
+                    .replaceAll("ns\\d+:","")
+                    .replaceAll("id=\"BP\\.\\d+\"","id=\"BP\"");
             String xmlWithoutNamespaces = xml
                     .replaceAll("S100_ExchangeCatalogue .+>","S100_ExchangeCatalogue>")
-                    .replaceAll("ns\\d+:","");
+                    .replaceAll("ns\\d+:","")
+                    .replaceAll("id=\"BP\\.\\d+\"","id=\"BP\"");
             assertEquals(s100ExchangeSetXmlWithoutNamespaces, xmlWithoutNamespaces);
         } finally {
             Locale.setDefault(l);

@@ -111,6 +111,25 @@
  * ("The digitalSignatureReference field must be encoded 'ECDSA-384-SHA2'"). The signer must
  * return the ECDSA R,S pair; the factory base64-encodes it into the XML.</p>
  *
+ * <h2>Cancellations and certificate rotation</h2>
+ *
+ * <p>A fileless cancellation reuses the cancelled dataset's original signature (Part 17
+ * clause 17-4.4.1), which was made with whatever certificate was current when the dataset was
+ * published. Certificates get replaced when they expire, so a cancellation issued after a
+ * rotation carries a signature that the current certificate cannot verify.</p>
+ *
+ * <p>Only the producer knows which certificate signed the original, so pass it with the
+ * cancellation:</p>
+ * <pre>{@code
+ * new Cancellation(fileName, datasetId, edition, update, issueDate, boundingBox,
+ *         signatureReference, originalSignatureValues,
+ *         List.of(certificateThatSignedTheOriginal));
+ * }</pre>
+ * <p>That certificate is then carried alongside the current one and the reused signature is
+ * pointed at it. The shorter constructor omits the list and means "signed with the exchange
+ * set's current Data Server certificate", which is correct as long as no rotation has
+ * happened in between.</p>
+ *
  * <h2>Verification, from the receiving system's point of view</h2>
  *
  * <ol>

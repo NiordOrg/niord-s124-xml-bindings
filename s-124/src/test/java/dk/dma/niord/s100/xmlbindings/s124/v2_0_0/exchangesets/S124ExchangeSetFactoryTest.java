@@ -337,6 +337,57 @@ class S124ExchangeSetFactoryTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    /**
+     * A fileless cancellation reuses the original dataset's signature (S-100 Part 17, clause
+     * 17-4.4.1). If the producer's certificate has been replaced since, the certificate that
+     * made that signature must still travel with the exchange set, or the reused signature
+     * resolves to the current key and cannot be verified.
+     */
+    @Test
+    void cancellationCarriesTheCertificateThatMadeItsOriginalSignature() throws Exception {
+        // Original signed under testCertPem ...
+        S124ExchangeSetFactory.Cancellation original = cancellationOf(newDataset("DK.S124.rotated"));
+        S124ExchangeSetFactory.Cancellation cancellation = new S124ExchangeSetFactory.Cancellation(
+                original.fileName(), original.datasetId(), original.editionNumber(),
+                original.updateNumber(), original.issueDate(), original.boundingBox(),
+                original.signatureReference(), original.signatureValues(),
+                List.of(testCertPem));
+
+        // ... but the exchange set is now produced under a different certificate.
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(cancellation))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(dataServerViaDcPem)
+                .intermediateCertificatePems(List.of(domainCoordinatorPem))
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        String catalogXml = new String(unzip(zipBytes).get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        assertThat(validateAgainstCatalogueSchema(catalogXml))
+                .as("XSD validation errors in CATALOG.XML:\n%s", catalogXml)
+                .isEmpty();
+
+        S100ExchangeCatalogue catalogue = catalogueOf(zipBytes);
+        Map<String, String> certificatePemById = catalogue.getCertificates().get(0).getCertificates()
+                .stream()
+                .collect(Collectors.toMap(S100SECertificateType::getId,
+                        c -> new String(c.getValue(), StandardCharsets.UTF_8)));
+
+        String ref = catalogue.getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0)
+                .getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue()
+                .getCertificateRef();
+
+        // The reference must resolve, and to the certificate that actually made the signature.
+        assertThat(certificatePemById).containsKey(ref);
+        assertThat(certificatePemById.get(ref)).isEqualTo(testCertPem);
+        assertThat(certificatePemById.get(ref)).isNotEqualTo(dataServerViaDcPem);
+        // The current Data Server certificate is still carried, for the catalogue's own signature.
+        assertThat(certificatePemById.get("cer1")).isEqualTo(dataServerViaDcPem);
+    }
+
     @Test
     void datasetEntriesFollowTheS124MetadataProfile() throws Exception {
         LocalDateTime beforeBuild = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1);
@@ -740,6 +791,7 @@ class S124ExchangeSetFactoryTest {
     }
 
     /** Builds a real exchange set for the given dataset and derives a fileless {@link S124ExchangeSetFactory.Cancellation} of it. */
+
     private static S124ExchangeSetFactory.Cancellation cancellationOf(Dataset dataset) throws Exception {
         byte[] zip = S124ExchangeSetFactory.builder()
                 .datasets(List.of(dataset))

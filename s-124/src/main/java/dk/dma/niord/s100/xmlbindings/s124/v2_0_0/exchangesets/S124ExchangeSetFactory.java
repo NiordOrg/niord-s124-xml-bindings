@@ -42,6 +42,8 @@ import dk.dma.niord.s100.catalog._5_2.S100Purpose;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateType;
 import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignatureReference;
+import dk.dma.niord.s100.catalog._5_2.ObjectFactory;
+import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignature;
 import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnData;
 import dk.dma.niord.s100.catalog._5_2.StandaloneDigitalSignature;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationType;
@@ -242,9 +244,18 @@ public final class S124ExchangeSetFactory {
      * unverifiable chain by listing the intermediates in the wrong order.
      */
     private List<ChainedCertificate> certificateChain() throws CertificateException {
-        X509Certificate dataServer = S100ExchangeSetUtils.getCertFromPem(cfg.certificatePem);
+        return certificateChain(cfg.certificatePem, cfg.intermediateCertificatePems, CERTIFICATE_REF, "ca");
+    }
+
+    /**
+     * Orders {@code leafPem} and its intermediates into a resolvable path and labels them:
+     * the leaf takes {@code leafId} and each intermediate {@code <intermediatePrefix>N}.
+     */
+    private List<ChainedCertificate> certificateChain(String leafPem, List<String> intermediatePems,
+            String leafId, String intermediatePrefix) throws CertificateException {
+        X509Certificate dataServer = S100ExchangeSetUtils.getCertFromPem(leafPem);
         List<X509Certificate> remaining = new ArrayList<>();
-        for (String pem : cfg.intermediateCertificatePems) {
+        for (String pem : intermediatePems) {
             remaining.add(S100ExchangeSetUtils.getCertFromPem(pem));
         }
 
@@ -287,14 +298,64 @@ public final class S124ExchangeSetFactory {
         for (int i = 0; i < ordered.size(); i++) {
             // The topmost certificate is issued by the scheme administrator; every other one
             // is issued by the certificate above it, referenced by its id.
-            String issuerId = i == ordered.size() - 1 ? cfg.schemeAdministrator : intermediateId(i + 1);
-            chain.add(new ChainedCertificate(i == 0 ? CERTIFICATE_REF : intermediateId(i), ordered.get(i), issuerId));
+            String issuerId = i == ordered.size() - 1
+                    ? cfg.schemeAdministrator
+                    : intermediateId(intermediatePrefix, i + 1);
+            chain.add(new ChainedCertificate(i == 0 ? leafId : intermediateId(intermediatePrefix, i),
+                    ordered.get(i), issuerId));
         }
         return chain;
     }
 
-    private static String intermediateId(int index) {
-        return "ca" + index;
+    private static String intermediateId(String prefix, int index) {
+        return prefix + index;
+    }
+
+    /** The id an equal certificate already has in the container, or {@code null}. */
+    private static String idOf(Map<String, X509Certificate> certificatesById, X509Certificate certificate) {
+        return certificatesById.entrySet().stream()
+                .filter(e -> e.getValue().equals(certificate))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Re-labels reused signatures to reference the certificate this catalogue carries for
+     * them. The signature bytes are untouched - only the document scoped id changes - and
+     * the caller's objects are left alone.
+     */
+    private static List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> withCertificateRef(
+            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> values, String certificateRef) {
+        ObjectFactory objectFactory = new ObjectFactory();
+        List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> result = new ArrayList<>(values.size());
+        for (S100DatasetDiscoveryMetadata.DigitalSignatureValue value : values) {
+            S100SEDigitalSignature original = value.getS100SEDigitalSignature() == null
+                    ? null
+                    : value.getS100SEDigitalSignature().getValue();
+            if (original == null) {
+                result.add(value);
+                continue;
+            }
+            S100DatasetDiscoveryMetadata.DigitalSignatureValue copy =
+                    new S100DatasetDiscoveryMetadata.DigitalSignatureValue();
+            if (original instanceof S100SESignatureOnData onData) {
+                S100SESignatureOnData signature = new S100SESignatureOnData();
+                signature.setId(onData.getId());
+                signature.setValue(onData.getValue());
+                signature.setDataStatus(onData.getDataStatus());
+                signature.setCertificateRef(certificateRef);
+                copy.setS100SEDigitalSignature(objectFactory.createS100SESignatureOnData(signature));
+            } else {
+                S100SEDigitalSignature signature = new S100SEDigitalSignature();
+                signature.setId(original.getId());
+                signature.setValue(original.getValue());
+                signature.setCertificateRef(certificateRef);
+                copy.setS100SEDigitalSignature(objectFactory.createS100SEDigitalSignature(signature));
+            }
+            result.add(copy);
+        }
+        return result;
     }
 
     /** Whether {@code issuer} really signed {@code subject}, as the OEM will check. */
@@ -346,12 +407,43 @@ public final class S124ExchangeSetFactory {
                 .setComment(cfg.comment)
                 .setProductSpecification(Collections.singletonList(cfg.productSpecification))
                 .setSchemeAdministrator(cfg.schemeAdministrator);
-        List<ChainedCertificate> chain = certificateChain();
         Map<String, X509Certificate> certificatesById = new LinkedHashMap<>();
         Map<String, String> certificateIssuers = new LinkedHashMap<>();
-        for (ChainedCertificate link : chain) {
+        for (ChainedCertificate link : certificateChain()) {
             certificatesById.put(link.id(), link.certificate());
             certificateIssuers.put(link.id(), link.issuerId());
+        }
+        // A fileless cancellation reuses the original dataset's signature, which was made with
+        // whichever certificate was current then. If that certificate has since been replaced,
+        // it has to travel with the exchange set too, otherwise the reused signature resolves
+        // to the wrong key and cannot be verified (S-100 Part 15, clause 15-8.7).
+        Map<Cancellation, String> cancellationCertificateRefs = new LinkedHashMap<>();
+        int cancellationIndex = 0;
+        for (Cancellation cancellation : cfg.cancellations) {
+            if (cancellation.certificatePems().isEmpty()) {
+                // No certificate supplied: the signature was made with the current one.
+                cancellationCertificateRefs.put(cancellation, CERTIFICATE_REF);
+                continue;
+            }
+            cancellationIndex++;
+            String leafId = "cerC" + cancellationIndex;
+            List<ChainedCertificate> cancellationChain = certificateChain(
+                    cancellation.certificatePems().get(0),
+                    cancellation.certificatePems().subList(1, cancellation.certificatePems().size()),
+                    leafId, "caC" + cancellationIndex + ".");
+            for (ChainedCertificate link : cancellationChain) {
+                String existingId = idOf(certificatesById, link.certificate());
+                if (existingId != null) {
+                    // Already carried for the current chain or an earlier cancellation.
+                    if (link.id().equals(leafId)) {
+                        leafId = existingId;
+                    }
+                    continue;
+                }
+                certificatesById.put(link.id(), link.certificate());
+                certificateIssuers.put(link.id(), link.issuerId());
+            }
+            cancellationCertificateRefs.put(cancellation, leafId);
         }
         catBuilder.setCertificates(certificatesById).setCertificateIssuers(certificateIssuers);
 
@@ -447,7 +539,8 @@ public final class S124ExchangeSetFactory {
                     .setMaintenanceFrequency(cfg.maintenanceDate == null ? null : cfg.maintenanceFrequency)
                     .setMaintenanceDate(cfg.maintenanceDate)
                     .setDigitalSignatureReference(signatureReference)
-                    .setDigitalSignatureValues(cancellation.signatureValues())
+                    .setDigitalSignatureValues(withCertificateRef(cancellation.signatureValues(),
+                            cancellationCertificateRefs.get(cancellation)))
                     .build(null));
         }
 
@@ -516,9 +609,24 @@ public final class S124ExchangeSetFactory {
             LocalDate issueDate,
             Geometry boundingBox,
             S100SEDigitalSignatureReference signatureReference,
-            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatureValues) {
+            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatureValues,
+            List<String> certificatePems) {
+
+        /**
+         * A cancellation signed with the exchange set's current Data Server certificate.
+         * Use the canonical constructor instead when the original dataset was signed with a
+         * certificate that has since been replaced.
+         */
+        public Cancellation(String fileName, String datasetId, BigInteger editionNumber,
+                BigInteger updateNumber, LocalDate issueDate, Geometry boundingBox,
+                S100SEDigitalSignatureReference signatureReference,
+                List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatureValues) {
+            this(fileName, datasetId, editionNumber, updateNumber, issueDate, boundingBox,
+                    signatureReference, signatureValues, List.of());
+        }
 
         public Cancellation {
+            certificatePems = certificatePems == null ? List.of() : List.copyOf(certificatePems);
             Objects.requireNonNull(fileName, "cancellation fileName must be set");
             Objects.requireNonNull(issueDate, "cancellation issueDate must be set");
             Objects.requireNonNull(boundingBox, "cancellation boundingBox must be set (S-124 "

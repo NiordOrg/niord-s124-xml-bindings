@@ -185,18 +185,19 @@ public final class S124ExchangeSetFactory {
      */
     private byte[] buildCatalogueSignature(byte[] catalogBytes) throws CertificateException, JAXBException {
         X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(cfg.certificatePem);
-        // The issuer of the Data Server certificate is the scheme administrator of the
-        // self-contained document, so that the certificate's issuer reference resolves in it.
-        String issuer = certificate.getIssuerX500Principal().getName();
 
         S100SECertificateType certificateType = new S100SECertificateType();
         certificateType.setId(CERTIFICATE_REF);
-        certificateType.setIssuer(issuer);
+        // S-100 Part 15, clause 15-8.6: issuer holds the id of the issuing ELEMENT - the
+        // schemeAdministrator id, or the id of an included domain coordinator certificate -
+        // not the issuer's X.500 distinguished name, which an OEM cannot resolve against the
+        // separately installed SA root certificate.
+        certificateType.setIssuer(cfg.schemeAdministrator);
         certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(certificate));
 
         S100SECertificateContainerType.SchemeAdministrator schemeAdministrator =
                 new S100SECertificateContainerType.SchemeAdministrator();
-        schemeAdministrator.setId(issuer);
+        schemeAdministrator.setId(cfg.schemeAdministrator);
         S100SECertificateContainerType certificates = new S100SECertificateContainerType();
         certificates.setSchemeAdministrator(schemeAdministrator);
         certificates.getCertificates().add(certificateType);
@@ -255,7 +256,8 @@ public final class S124ExchangeSetFactory {
                 .setDescription(cfg.description)
                 .setComment(cfg.comment)
                 .setProductSpecification(Collections.singletonList(cfg.productSpecification))
-                .setCertificatesByPem(Collections.singletonMap(CERTIFICATE_REF, cfg.certificatePem));
+                .setCertificatesByPem(Collections.singletonMap(CERTIFICATE_REF, cfg.certificatePem))
+                .setSchemeAdministrator(cfg.schemeAdministrator);
 
         for (DatasetFile df : datasetFiles) {
             Geometry bbox = GeometryS124Converter.envelopeToJts(df.dataset.getBoundedBy());
@@ -458,6 +460,10 @@ public final class S124ExchangeSetFactory {
         private String country;
         private String administrativeArea;
         private List<Locale> locales = Collections.singletonList(Locale.ENGLISH);
+        // S-100 Part 15, clause 15-8.11.1: the Scheme Administrator identity, whose root
+        // certificate the OEM installs separately; "The encoding of IHO as schemeAdministrator
+        // is <S100SE:schemeAdministrator id="IHO"/>".
+        private String schemeAdministrator = "IHO";
         // S-100 Part 15, clause 15-8.7: "The digitalSignatureReference field must be encoded
         // 'ECDSA-384-SHA2'."
         private S100SEDigitalSignatureReference signatureAlgorithm = S100SEDigitalSignatureReference.ECDSA_384_SHA_2;
@@ -534,6 +540,14 @@ public final class S124ExchangeSetFactory {
          * this is set.
          */
         public Builder maintenanceDate(LocalDate d) { this.maintenanceDate = d; return this; }
+
+        /**
+         * Identity of the S-100 Scheme Administrator that issued the Data Server certificate,
+         * used as the {@code schemeAdministrator} id and as the certificate's {@code issuer}
+         * reference in both CATALOG.XML and CATALOG.SIGN. Defaults to {@code IHO}; override
+         * only when the certificate chains to a different scheme administrator.
+         */
+        public Builder schemeAdministrator(String id) { this.schemeAdministrator = id; return this; }
 
         /** Producing agency online resource; one of the CI_Contact attributes of Table 17-3 NOTE 2. */
         public Builder onlineResource(String url) { this.onlineResource = url; return this; }

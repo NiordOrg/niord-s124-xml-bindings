@@ -139,15 +139,21 @@ class S124ExchangeSetFactoryTest {
                 .toBytes();
 
         String signXml = new String(unzip(zipBytes).get("S100_ROOT/CATALOG.SIGN"), StandardCharsets.UTF_8);
-
         assertThat(validateAgainstSignatureSchema(signXml))
                 .as("XSD validation errors in CATALOG.SIGN:\n%s", signXml)
                 .isEmpty();
 
         StandaloneDigitalSignature signature = unmarshalSignature(signXml);
         assertThat(signature.getFilename()).isEqualTo("CATALOG.XML");
-        assertThat(signature.getCertificates().getSchemeAdministrator().getId()).isNotBlank();
         assertThat(signature.getCertificates().getCertificates()).hasSize(1);
+        // S-100 Part 15, clauses 15-8.6 and 15-8.11.1: the schemeAdministrator id is the SA
+        // identity (IHO by default) whose root certificate the OEM installs separately, and a
+        // certificate's issuer is the id of the issuing element, not an X.500 distinguished
+        // name - otherwise the OEM cannot resolve the chain and verification fails.
+        assertThat(signature.getCertificates().getSchemeAdministrator().getId()).isEqualTo("IHO");
+        assertThat(signature.getCertificates().getCertificates().get(0).getIssuer())
+                .isEqualTo(signature.getCertificates().getSchemeAdministrator().getId())
+                .doesNotContain("CN=", "O=");
         assertThat(signature.getDigitalSignature().getValue()).isEqualTo(signatureBytes);
         assertThat(signature.getDigitalSignature().getCertificateRef())
                 .isEqualTo(signature.getCertificates().getCertificates().get(0).getId());
@@ -185,6 +191,36 @@ class S124ExchangeSetFactoryTest {
                 .contains("asNeeded")
                 .contains("2026-01-15")
                 .doesNotContain("continual");
+    }
+
+    /**
+     * The SA identity must be the same in CATALOG.XML and CATALOG.SIGN, or the certificate
+     * references of one file cannot be resolved with the chain declared by the other.
+     */
+    @Test
+    void schemeAdministratorIsConsistentAcrossCatalogueAndSignature() throws Exception {
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.scheme-admin")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .schemeAdministrator("IHO-TEST")
+                .build()
+                .toBytes();
+
+        Map<String, byte[]> entries = unzip(zipBytes);
+        String catalogXml = new String(entries.get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        StandaloneDigitalSignature signature = unmarshalSignature(
+                new String(entries.get("S100_ROOT/CATALOG.SIGN"), StandardCharsets.UTF_8));
+
+        assertThat(catalogXml)
+                .as("CATALOG.XML:%n%s", catalogXml)
+                .contains("id=\"IHO-TEST\"")
+                .contains("issuer=\"IHO-TEST\"");
+        assertThat(signature.getCertificates().getSchemeAdministrator().getId()).isEqualTo("IHO-TEST");
+        assertThat(signature.getCertificates().getCertificates().get(0).getIssuer()).isEqualTo("IHO-TEST");
     }
 
     @Test

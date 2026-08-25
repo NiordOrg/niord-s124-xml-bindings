@@ -101,7 +101,8 @@ public final class GeometryS124Converter {
                         .map(PointProperty.class::cast)
                         .map(PointProperty::getPoint)
                         .map(PointType::getPos)
-                        .map(pos -> new Coordinate(pos.getValue()[0], pos.getValue()[1]))
+                        // GML order is lat,lon; JTS expects lon,lat.
+                        .map(pos -> new Coordinate(pos.getValue()[1], pos.getValue()[0]))
                         .map(geometryFactory::createPoint)
                         .map(Geometry.class::cast)
                         .orElse(geometryFactory.createEmpty(0));

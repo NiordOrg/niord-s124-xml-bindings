@@ -3,6 +3,7 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets;
 import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.time.LocalDate;
@@ -250,11 +251,25 @@ public final class S124ExchangeSetFactory {
         List<X509Certificate> ordered = new ArrayList<>();
         ordered.add(dataServer);
         while (!remaining.isEmpty()) {
-            X500Principal issuerName = ordered.get(ordered.size() - 1).getIssuerX500Principal();
-            Optional<X509Certificate> issuer = remaining.stream()
+            X509Certificate subject = ordered.get(ordered.size() - 1);
+            X500Principal issuerName = subject.getIssuerX500Principal();
+            List<X509Certificate> namedIssuers = remaining.stream()
                     .filter(c -> c.getSubjectX500Principal().equals(issuerName))
+                    .toList();
+            // The name only says which certificate claims to be the issuer; the signature says
+            // which one actually is. They diverge when an intermediate is rolled over or
+            // replaced, and the OEM checks the signature, so the chain is built on it too.
+            Optional<X509Certificate> issuer = namedIssuers.stream()
+                    .filter(candidate -> issued(candidate, subject))
                     .findFirst();
             if (issuer.isEmpty()) {
+                if (!namedIssuers.isEmpty()) {
+                    throw new ExchangeSetException(String.format(
+                            "Certificate %s names %s as its issuer but no configured certificate "
+                                    + "with that subject actually signed it, so the OEM would "
+                                    + "reject the chain (S-100 Part 15, clause 15-8.7)",
+                            subject.getSubjectX500Principal().getName(), issuerName.getName()));
+                }
                 break;
             }
             remaining.remove(issuer.get());
@@ -280,6 +295,16 @@ public final class S124ExchangeSetFactory {
 
     private static String intermediateId(int index) {
         return "ca" + index;
+    }
+
+    /** Whether {@code issuer} really signed {@code subject}, as the OEM will check. */
+    private static boolean issued(X509Certificate issuer, X509Certificate subject) {
+        try {
+            subject.verify(issuer.getPublicKey());
+            return true;
+        } catch (GeneralSecurityException e) {
+            return false;
+        }
     }
 
     /**
@@ -633,7 +658,17 @@ public final class S124ExchangeSetFactory {
          * reference in both CATALOG.XML and CATALOG.SIGN. Defaults to {@code IHO}; override
          * only when the certificate chains to a different scheme administrator.
          */
-        public Builder schemeAdministrator(String id) { this.schemeAdministrator = id; return this; }
+        public Builder schemeAdministrator(String id) {
+            // The id is a required XML attribute and the anchor every certificate's issuer
+            // reference resolves to, so an absent one makes both catalogue files unusable.
+            if (id == null || id.isBlank()) {
+                throw new IllegalArgumentException("schemeAdministrator id must not be blank "
+                        + "(S-100 Part 15, clause 15-8.11.1: the Scheme Administrator identity "
+                        + "is carried in the id attribute of the schemeAdministrator element)");
+            }
+            this.schemeAdministrator = id;
+            return this;
+        }
 
         /** Producing agency online resource; one of the CI_Contact attributes of Table 17-3 NOTE 2. */
         public Builder onlineResource(String url) { this.onlineResource = url; return this; }

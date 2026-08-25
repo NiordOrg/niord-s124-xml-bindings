@@ -63,12 +63,15 @@ class S124ExchangeSetFactoryTest {
     private static String dataServerViaDcPem;
     /** Domain coordinator certificate, issued by the (separately installed) SA root. */
     private static String domainCoordinatorPem;
+    /** Same subject name as the real domain coordinator, but a different key: it signed nothing here. */
+    private static String domainCoordinatorRolloverPem;
 
     @BeforeAll
     static void loadCert() throws Exception {
         testCertPem = readResource("/test-cert.pem");
         dataServerViaDcPem = readResource("/test-cert-dataserver-via-dc.pem");
         domainCoordinatorPem = readResource("/test-cert-domaincoordinator.pem");
+        domainCoordinatorRolloverPem = readResource("/test-cert-domaincoordinator-rollover.pem");
     }
 
     private static String readResource(String name) throws Exception {
@@ -299,6 +302,39 @@ class S124ExchangeSetFactoryTest {
         assertThatThrownBy(factory::toBytes)
                 .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
                 .hasMessageContaining("does not issue any other configured certificate");
+    }
+
+    /**
+     * A certificate can carry the issuer's name without being the certificate that signed it -
+     * the usual cause is an intermediate that has been rolled over. The OEM verifies the
+     * signature, so matching on the name alone would ship a chain that fails on board.
+     */
+    @Test
+    void intermediateThatDidNotSignTheDataServerCertificateIsRejected() {
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.rollover")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(dataServerViaDcPem)
+                // Same subject name as the domain coordinator that really issued it, other key.
+                .intermediateCertificatePems(List.of(domainCoordinatorRolloverPem))
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("actually signed it");
+    }
+
+    /** The id anchors every issuer reference, so an absent one makes both catalogue files unusable. */
+    @Test
+    void blankSchemeAdministratorIsRejected() {
+        assertThatThrownBy(() -> S124ExchangeSetFactory.builder().schemeAdministrator(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not be blank");
+        assertThatThrownBy(() -> S124ExchangeSetFactory.builder().schemeAdministrator("  "))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

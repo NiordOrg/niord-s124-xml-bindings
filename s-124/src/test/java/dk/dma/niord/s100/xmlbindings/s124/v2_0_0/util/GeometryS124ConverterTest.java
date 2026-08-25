@@ -26,6 +26,14 @@ import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.AbstractRingProperty
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.LineStringSegmentType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.LinearRingType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.PolygonPatchType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.SurfacePropertyImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.SurfaceTypeImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.AbstractRingPropertyTypeImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.LineStringSegmentTypeImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.LinearRingTypeImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.PatchesImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.PolygonPatchTypeImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.PosListImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.PosImpl;
 
 /**
@@ -245,6 +253,64 @@ class GeometryS124ConverterTest {
         assertThatThrownBy(() -> GeometryS124Converter.pointCurveSurfaceToGeometry(properties))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("compositeCurve");
+    }
+
+    /**
+     * S-100 Part 10b restricts positions to two dimensions, so an odd ordinate count is a
+     * malformed list. Truncating it would drop a latitude and move the geometry.
+     */
+    @Test
+    void oddLengthPosListIsRejected() {
+        LineStringSegmentTypeImpl segment = new LineStringSegmentTypeImpl();
+        PosListImpl posList = new PosListImpl();
+        posList.setValue(new Double[] { 55.0, 12.0, 56.0 });
+        segment.setPosList(posList);
+        List<S100SpatialAttributeType> properties = List.of(curveProperty(
+                new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
+                        .createLineStringSegment(segment)));
+
+        assertThatThrownBy(() -> GeometryS124Converter.pointCurveSurfaceToGeometry(properties))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not a whole number of two dimensional positions");
+    }
+
+    /**
+     * Dropping a malformed hole would turn an area with an excluded region into one that
+     * covers it - the dangerous direction for a navigational warning.
+     */
+    @Test
+    void malformedInteriorRingIsRejectedRatherThanDropped() {
+        PolygonPatchTypeImpl patch = new PolygonPatchTypeImpl();
+        patch.setExterior(ring(new Double[] {
+                55.0, 12.0, 55.0, 13.0, 56.0, 13.0, 56.0, 12.0, 55.0, 12.0 }));
+        // Two positions cannot close a ring.
+        patch.getInteriors().add(ring(new Double[] { 55.4, 12.4, 55.6, 12.6 }));
+
+        SurfaceTypeImpl surface = new SurfaceTypeImpl();
+        PatchesImpl patches = new PatchesImpl();
+        patches.getAbstractSurfacePatches().add(
+                new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
+                        .createPolygonPatch(patch));
+        surface.setPatches(patches);
+        SurfacePropertyImpl property = new SurfacePropertyImpl();
+        property.setSurface(surface);
+        List<S100SpatialAttributeType> properties = List.of(property);
+
+        assertThatThrownBy(() -> GeometryS124Converter.pointCurveSurfaceToGeometry(properties))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Malformed interior ring");
+    }
+
+    private static AbstractRingPropertyType ring(Double[] latLonValues) {
+        PosListImpl posList = new PosListImpl();
+        posList.setValue(latLonValues);
+        LinearRingTypeImpl linearRing = new LinearRingTypeImpl();
+        linearRing.setPosList(posList);
+        AbstractRingPropertyTypeImpl ringProperty = new AbstractRingPropertyTypeImpl();
+        ringProperty.setAbstractRing(
+                new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
+                        .createLinearRing(linearRing));
+        return ringProperty;
     }
 
     private static PosImpl pos(double lat, double lon) {

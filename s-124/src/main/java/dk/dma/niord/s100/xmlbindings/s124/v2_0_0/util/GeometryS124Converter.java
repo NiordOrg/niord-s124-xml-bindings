@@ -4,7 +4,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -205,7 +204,6 @@ public final class GeometryS124Converter {
                         .filter(PolygonPatchType.class::isInstance)
                         .map(PolygonPatchType.class::cast)
                         .map(patch -> patchToGeometry(patch, geometryFactory))
-                        .filter(Objects::nonNull)
                         .toList()
                         .toArray(Geometry[]::new));
             } else {
@@ -217,16 +215,24 @@ public final class GeometryS124Converter {
     private static Geometry patchToGeometry(PolygonPatchType patch, GeometryFactory geometryFactory) {
         Coordinate[] shell = ringCoordinates(patch.getExterior());
         if (shell == null) {
-            return null;
+            // Dropping the patch would lose the whole area the warning covers.
+            throw new IllegalArgumentException("Polygon patch has no readable exterior ring");
         }
         if (shell.length == 1) {
             return geometryFactory.createPoint(shell[0]);
         }
+        // A dropped hole turns an area with an excluded region into one that covers it, so a
+        // malformed interior ring fails the whole patch instead of being filtered away.
         LinearRing[] holes = patch.getInteriors().stream()
-                .map(GeometryS124Converter::ringCoordinates)
-                .filter(Objects::nonNull)
-                .filter(coords -> coords.length >= 4)
-                .map(geometryFactory::createLinearRing)
+                .map(interior -> {
+                    Coordinate[] coords = ringCoordinates(interior);
+                    if (coords == null || coords.length < 4) {
+                        throw new IllegalArgumentException("Malformed interior ring: "
+                                + (coords == null ? "no ring" : coords.length + " positions")
+                                + ", a linear ring needs at least four");
+                    }
+                    return geometryFactory.createLinearRing(coords);
+                })
                 .toArray(LinearRing[]::new);
         return geometryFactory.createPolygon(geometryFactory.createLinearRing(shell), holes);
     }
@@ -427,8 +433,15 @@ public final class GeometryS124Converter {
         if (values == null) {
             return new Coordinate[0];
         }
+        // Coordinates are two dimensional (S-100 Part 10b restricts DirectPosition to two
+        // coordinates), so an odd count means the list is malformed. Truncating it would
+        // drop a position's latitude and silently move the geometry.
+        if (values.length % 2 != 0) {
+            throw new IllegalArgumentException("Malformed posList: " + values.length
+                    + " ordinates is not a whole number of two dimensional positions");
+        }
         List<Coordinate> result = new ArrayList<>();
-        for (int i = 0; i + 1 < values.length; i = i + 2) {
+        for (int i = 0; i < values.length; i = i + 2) {
             // GML order is lat,lon; JTS expects lon,lat.
             result.add(new Coordinate(values[i + 1], values[i]));
         }

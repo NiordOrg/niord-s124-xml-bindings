@@ -136,6 +136,30 @@ public final class GeometryS124Converter {
         });
     }
 
+    /**
+     * Reads S-124 spatial properties back into a single JTS geometry.
+     *
+     * <p>This is <em>not</em> the inverse of
+     * {@link #geometryToS124PointCurveSurfaceGeometry(Geometry)}: the properties are combined
+     * with {@link Geometry#union(Geometry)}, so the result is one geometry rather than one per
+     * property, and overlapping members are merged rather than preserved side by side. Union
+     * also renormalises the result, so ring orientation and vertex order need not survive a
+     * write/read round trip even though the coordinates do.</p>
+     *
+     * <p>Only the constructs the generation path produces can be read back. A conformant
+     * producer may legitimately use others - S-124 Ed 2.0.0 clause 8.8 recommends
+     * loxodromic, {@code circularArc3Points} or {@code circularArcCenterPointWithRadius}
+     * interpolation depending on the use case, and the S-100 GML profile admits
+     * {@code CompositeCurve} and {@code OrientableCurve} properties - and those raise
+     * {@link UnsupportedOperationException} rather than being skipped, because silently
+     * dropping a segment would move a navigational warning rather than fail to read it.
+     * Callers ingesting third-party datasets should expect that exception and treat it as
+     * "unsupported geometry", not as malformed input. Positions may be encoded either as a
+     * {@code gml:posList} or as a sequence of {@code gml:pos} elements; both are read.</p>
+     *
+     * @param properties the point, curve and surface properties of a feature
+     * @return the union of the properties, or an empty geometry when there are none
+     */
     public static Geometry pointCurveSurfaceToGeometry(List<S100SpatialAttributeType> properties) {
         GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
         return properties.stream().map(pty -> {

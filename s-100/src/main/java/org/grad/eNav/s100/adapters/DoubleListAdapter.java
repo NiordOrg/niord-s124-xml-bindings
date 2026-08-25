@@ -28,7 +28,16 @@ import java.util.stream.Stream;
  * The Double List Adapter Class.
  *
  * This is used to translate between the Java Double Array objects and the XML
- * String elements.
+ * String elements. It backs the whitespace separated GML coordinate lists
+ * ({@code gml:pos}, {@code gml:posList}) as well as the envelope corners.
+ * <p/>
+ * Every value is written with exactly seven fractional digits. Ordinates are
+ * therefore rounded to 1e-7 of a unit - for the EPSG:4326 degrees used
+ * throughout S-124 that is roughly a centimetre of latitude, far below any
+ * navigational significance, but it is a lossy quantisation: values are not
+ * guaranteed to survive a marshal/unmarshal round trip bit for bit, and short
+ * values are padded ({@code 55.5} is written as {@code 55.5000000}). Tests that
+ * compare marshalled output against a fixture must expect the padded form.
  *
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */

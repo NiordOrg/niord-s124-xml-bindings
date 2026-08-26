@@ -49,12 +49,14 @@ class DateAdapterTest {
     }
 
     /**
-     * Test that the legacy basic form produced by earlier versions of these
-     * bindings is still accepted when unmarshalling.
+     * Test that extended years are handled as xs:gYear values rather than as
+     * the ambiguous, non-standard legacy basic-date representation.
      */
     @Test
-    void testUnmarshalAcceptsLegacyBasicForm() {
-        assertEquals(LocalDate.of(2026, 1, 15), this.dateAdapter.unmarshal("20260115"));
+    void testUnmarshalPrefersGYearOverAmbiguousLegacyBasicForm() {
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026"));
+        assertEquals(LocalDate.of(12004, 1, 1), this.dateAdapter.unmarshal("12004"));
+        assertEquals(LocalDate.of(20_260_115, 1, 1), this.dateAdapter.unmarshal("20260115"));
     }
 
     /**
@@ -65,6 +67,7 @@ class DateAdapterTest {
     @Test
     void testUnmarshalAcceptsGYearMonth() {
         assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-01"));
+        assertEquals(LocalDate.of(12004, 1, 1), this.dateAdapter.unmarshal("12004-01"));
         assertEquals(LocalDate.of(2026, 12, 1), this.dateAdapter.unmarshal("2026-12"));
         assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-01Z"));
         assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-01+02:00"));

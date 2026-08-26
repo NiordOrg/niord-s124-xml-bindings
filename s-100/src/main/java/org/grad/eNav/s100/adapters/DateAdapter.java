@@ -44,25 +44,23 @@ import java.time.temporal.TemporalAccessor;
  * Dates are marshalled in the extended ISO-8601 form ({@code 2026-01-15})
  * required by the {@code xs:date} lexical space - which is also a member of
  * the {@code gco:Date_Type} union, so any unmarshalled value round-trips to a
- * valid (if day-precision) date. The basic form ({@code 20260115}) produced by
- * earlier versions of these bindings is still accepted when unmarshalling.
+ * valid (if day-precision) date. The old basic form ({@code 20260115}) is not
+ * accepted: it is indistinguishable from the valid {@code xs:gYear} value for
+ * the year 20,260,115, so the schema-defined union interpretation takes
+ * precedence.
  *
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
 public class DateAdapter extends XmlAdapter<String, LocalDate> {
 
+    /** The legacy basic date pattern, retained for DateTimeAdapter compatibility. */
     public static final String S100_DATE_FORMAT = "yyyyMMdd";
-    public final DateTimeFormatter S100_DATE_FORMATTER = new DateTimeFormatterBuilder()
-            .parseCaseInsensitive()
-            .appendPattern(S100_DATE_FORMAT)
-            .parseStrict()
-            .toFormatter();
 
     /**
      * The xs:gYearMonth lexical space (e.g. 2026-01, 2026-01Z, 2026-01+02:00).
      */
     private static final DateTimeFormatter G_YEAR_MONTH_FORMATTER = new DateTimeFormatterBuilder()
-            .appendValue(ChronoField.YEAR, 4, 10, SignStyle.EXCEEDS_PAD)
+            .appendValue(ChronoField.YEAR, 4, 9, SignStyle.NORMAL)
             .appendLiteral('-')
             .appendValue(ChronoField.MONTH_OF_YEAR, 2)
             .optionalStart()
@@ -71,12 +69,12 @@ public class DateAdapter extends XmlAdapter<String, LocalDate> {
             .toFormatter();
 
     /**
-     * The xs:gYear lexical space (e.g. 2026, 2026Z, 2026+02:00). Only the
-     * four digit years are accepted, so that the legacy basic date form
-     * ({@code 20260115}) cannot be mistaken for a year.
+     * The xs:gYear lexical space (e.g. 2026, 12004, 2026Z, 2026+02:00).
+     * Years are variable-width as XML Schema specifies, up to the range
+     * representable by {@link LocalDate}.
      */
     private static final DateTimeFormatter G_YEAR_FORMATTER = new DateTimeFormatterBuilder()
-            .appendValue(ChronoField.YEAR, 4, 4, SignStyle.NORMAL)
+            .appendValue(ChronoField.YEAR, 4, 9, SignStyle.NORMAL)
             .optionalStart()
             .appendOffsetId()
             .optionalEnd()
@@ -111,15 +109,6 @@ public class DateAdapter extends XmlAdapter<String, LocalDate> {
             return LocalDate.parse(xml, DateTimeFormatter.ISO_DATE);
         } catch (DateTimeParseException e) {
             // not an xs:date, so try the remaining lexical spaces
-        }
-
-        // The legacy basic form produced by earlier versions of these bindings
-        try {
-            synchronized (S100_DATE_FORMATTER) {
-                return LocalDate.parse(xml, S100_DATE_FORMATTER);
-            }
-        } catch (DateTimeParseException e) {
-            // not the legacy basic form, so try the truncated member types
         }
 
         // The xs:gYearMonth member type, widened to the first day of the month

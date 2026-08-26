@@ -412,6 +412,8 @@ class S100ExchangeSetUtilsTest {
         PolygonType polygonType = (PolygonType) dataCoverage.get(0).getBoundingPolygon().getPolygons().get(0).getAbstractGeometry().getValue();
         assertNotNull(polygonType.getId());
         assertTrue(polygonType.getId().startsWith(S100ExchangeSetUtils.BOUNDING_POLYGON_ID_PREFIX));
+        // NOTE 1 also fixes the SRS of the bounding polygon to EPSG:4326
+        assertEquals(S100ExchangeSetUtils.BOUNDING_POLYGON_SRS_NAME, polygonType.getSrsName());
         assertEquals(BigInteger.TWO, polygonType.getSrsDimension());
         assertNotNull(polygonType.getExterior());
         assertNotNull(polygonType.getExterior().getAbstractRing());

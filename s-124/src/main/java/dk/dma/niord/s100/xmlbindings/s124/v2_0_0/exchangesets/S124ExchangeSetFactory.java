@@ -15,13 +15,16 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -76,7 +79,7 @@ import jakarta.xml.bind.Marshaller;
  * <pre>
  * S100_ROOT/
  *  ├── S-124/
- *  │   ├── DATASET_FILES/   124&lt;producer&gt;&lt;uuid&gt;-&lt;idx&gt;.GML
+ *  │   ├── DATASET_FILES/   124&lt;producer&gt;&lt;unique code&gt;.GML
  *  │   ├── CATALOGUES/      (empty)
  *  │   └── SUPPORT_FILES/   (empty)
  *  ├── CATALOG.XML
@@ -165,13 +168,17 @@ public final class S124ExchangeSetFactory {
 
     private List<DatasetFile> marshalDatasets() throws JAXBException {
         List<DatasetFile> result = new ArrayList<>(cfg.datasets.size());
-        AtomicInteger idx = new AtomicInteger();
+        Set<String> fileNames = new LinkedHashSet<>();
         for (Dataset dataset : cfg.datasets) {
             String uuid = datasetUuid(dataset);
-            // S-100 Part 17, clause 17-4.3 (mandated for S-124 by clause 9.7): the file name is
-            // the product code, the producer code, a unique code and the encoding specific file
-            // extension - .GML for the GML encoding (.XML is reserved for metadata files).
-            String fileName = String.format("124%s%s-%d.GML", cfg.producerCode, uuid, idx.getAndIncrement());
+            String fileName = datasetFileName(dataset, uuid);
+            if (!fileNames.add(fileName)) {
+                throw new ExchangeSetException(String.format(
+                        "Two S-124 datasets would both be packaged as %s, but S-100 Part 17, clause "
+                                + "17-4.3, requires all base dataset file names to be unique; give the "
+                                + "datasets different unique codes",
+                        fileName));
+            }
             byte[] bytes = S124Utils.marshalS124(dataset).getBytes(StandardCharsets.UTF_8);
             if (bytes.length > MAX_DATASET_SIZE_BYTES) {
                 throw new ExchangeSetException(String.format(
@@ -181,6 +188,59 @@ public final class S124ExchangeSetFactory {
             result.add(new DatasetFile(fileName, bytes, dataset, uuid));
         }
         return result;
+    }
+
+    /**
+     * The name of the file a dataset is packaged in.
+     * <p/>
+     * S-100 Part 17, clause 17-4.3 (mandated for S-124 by clause 9.7), names dataset files
+     * XXXYYYYØØØØ.[EXT]: the product code 124, the producer code, "an arbitrary length unique
+     * code in alphanumeric characters" and the encoding specific file extension - .GML for the
+     * GML encoding, .XML being reserved for metadata files. Anything the dataset identifier
+     * carries beyond those characters, such as the dots and hyphens of a typical gml:id, is
+     * therefore dropped from the unique code rather than written into the file name.
+     * <p/>
+     * When the dataset header declares a {@code datasetFileIdentifier}, that name wins: S-100
+     * Part 10b Table 10b-4 defines it as "The file name including the extension but excluding
+     * any path information", so a packaged file under any other name would contradict the
+     * dataset it contains. A declared identifier which is not a conformant file name is
+     * rejected instead of being repaired, because renaming it here would leave the dataset's
+     * own - signed - header pointing at a file the exchange set does not contain.
+     */
+    private String datasetFileName(Dataset dataset, String uuid) {
+        String declared = Optional.ofNullable(dataset.getDatasetIdentificationInformation())
+                .map(DataSetIdentificationType::getDatasetFileIdentifier)
+                .filter(s -> !s.isBlank())
+                .orElse(null);
+        if (declared == null) {
+            return String.format("124%s%s.GML", cfg.producerCode, uniqueCode(uuid));
+        }
+        if (!datasetFileNamePattern(cfg.producerCode).matcher(declared).matches()) {
+            throw new ExchangeSetException(String.format(
+                    "The dataset declares datasetFileIdentifier \"%s\", which is not a valid S-100 "
+                            + "Part 17, clause 17-4.3, dataset file name: expected 124%s followed by "
+                            + "an alphanumeric unique code and \".GML\" (S-100 Part 10b Table 10b-4 "
+                            + "requires the identifier to be the name of the packaged file)",
+                    declared, cfg.producerCode));
+        }
+        return declared;
+    }
+
+    /** The Part 17, clause 17-4.3 file name pattern for S-124 datasets of one producer. */
+    private static Pattern datasetFileNamePattern(String producerCode) {
+        return Pattern.compile("124" + Pattern.quote(producerCode) + "[A-Za-z0-9]+\\.GML");
+    }
+
+    /** The alphanumeric unique code clause 17-4.3 builds a file name around. */
+    private static String uniqueCode(String datasetId) {
+        String code = datasetId.replaceAll("[^A-Za-z0-9]", "");
+        if (code.isEmpty()) {
+            throw new ExchangeSetException(String.format(
+                    "The dataset identifier \"%s\" holds no alphanumeric character, so it yields no "
+                            + "unique code for the file name required by S-100 Part 17, clause 17-4.3",
+                    datasetId));
+        }
+        return code;
     }
 
     /**
@@ -709,7 +769,21 @@ public final class S124ExchangeSetFactory {
         public Builder country(String country) { this.country = country; return this; }
         public Builder administrativeArea(String area) { this.administrativeArea = area; return this; }
         public Builder locales(List<Locale> locales) { this.locales = locales; return this; }
-        public Builder signatureAlgorithm(S100SEDigitalSignatureReference algorithm) { this.signatureAlgorithm = algorithm; return this; }
+        /**
+         * Overrides the signature algorithm. S-100 Part 15, clause 15-8.7, admits a single
+         * value - "The digitalSignatureReference field must be encoded 'ECDSA-384-SHA2'" -
+         * so every other enumeration value is rejected rather than written into a catalogue
+         * an OEM would refuse to authenticate.
+         */
+        public Builder signatureAlgorithm(S100SEDigitalSignatureReference algorithm) {
+            if (algorithm != S100SEDigitalSignatureReference.ECDSA_384_SHA_2) {
+                throw new IllegalArgumentException("signatureAlgorithm must be ECDSA-384-SHA2 "
+                        + "(S-100 Part 15, clause 15-8.7: \"The digitalSignatureReference field "
+                        + "must be encoded 'ECDSA-384-SHA2'\")");
+            }
+            this.signatureAlgorithm = algorithm;
+            return this;
+        }
         public Builder notForNavigation(boolean v) { this.notForNavigation = v; return this; }
         public Builder classification(SecurityClassification c) { this.classification = c; return this; }
         public Builder producingAgencyRole(RoleCode role) { this.producingAgencyRole = role; return this; }
@@ -767,6 +841,17 @@ public final class S124ExchangeSetFactory {
             }
             Objects.requireNonNull(organization, "organization must be set");
             Objects.requireNonNull(producerCode, "producerCode must be set");
+            // The producer code is the fixed width YYYY field of the XXXYYYYØØØØ dataset file
+            // name of S-100 Part 17, clause 17-4.3, and the IHO Producer Code Register issues
+            // it as a four character code. Any other length or character both misnames every
+            // dataset file and leaves a reader unable to tell where the unique code begins.
+            if (!producerCode.matches("[A-Za-z0-9]{4}")) {
+                throw new IllegalArgumentException(String.format(
+                        "producerCode \"%s\" must be four alphanumeric characters: it is the YYYY "
+                                + "field of the dataset file names of S-100 Part 17, clause 17-4.3, "
+                                + "and the IHO Producer Code Register issues four character codes",
+                        producerCode));
+            }
             Objects.requireNonNull(certificatePem, "certificatePem must be set");
             Objects.requireNonNull(signer, "signer must be set");
             Objects.requireNonNull(productSpecification, "productSpecification must be set");

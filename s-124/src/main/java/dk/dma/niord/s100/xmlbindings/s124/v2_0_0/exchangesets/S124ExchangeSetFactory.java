@@ -2,7 +2,6 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
@@ -10,6 +9,7 @@ import java.security.cert.X509Certificate;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -30,13 +30,15 @@ import java.util.zip.ZipOutputStream;
 
 import javax.security.auth.x500.X500Principal;
 
-import org.grad.eNav.s100.enums.MaintenanceFrequency;
 import org.grad.eNav.s100.enums.RoleCode;
 import org.grad.eNav.s100.enums.SecurityClassification;
 import org.grad.eNav.s100.enums.TelephoneType;
 import org.grad.eNav.s100.utils.S100ExchangeCatalogueBuilder;
 import org.grad.eNav.s100.utils.S100ExchangeSetUtils;
+import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.PrecisionModel;
 
 import dk.dma.niord.s100.catalog._5_2.DataStatus;
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
@@ -49,9 +51,16 @@ import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignatureReference;
 import dk.dma.niord.s100.catalog._5_2.ObjectFactory;
 import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignature;
 import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnData;
+import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnSignature;
 import dk.dma.niord.s100.catalog._5_2.StandaloneDigitalSignature;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.S100SpatialAttributeType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.AbstractGMLType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnAreaAffected;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPart;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPreamble;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.TextPlacement;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124Utils;
 import jakarta.xml.bind.JAXBContext;
@@ -94,9 +103,28 @@ import jakarta.xml.bind.Marshaller;
  * and all other mandatory metadata, but ships no dataset file. Consumers use it to remove the
  * referenced dataset. See {@link Cancellation}.</p>
  *
- * <p><strong>Producer responsibilities the factory cannot check.</strong> Two entries of the
- * S-124 clause 12.2.2 discovery-metadata profile depend on the content of the dataset's
- * {@code NavwarnPreamble}, which this factory does not parse:</p>
+ * <p>The dataset entries follow the S-124 clause 12.2.2 profile of
+ * {@code S100_DatasetDiscoveryMetadata}, which clause 12.1 restricts "to remove attributes that
+ * are not relevant to a Navigational Warning service": none of {@code editionNumber},
+ * {@code updateNumber}, {@code dataCoverage}, {@code replacedData}, {@code resourceMaintenance},
+ * {@code protectionScheme} and {@code navigationPurpose} is encoded. Two entries are read off
+ * the dataset itself:</p>
+ * <ul>
+ *   <li>{@code boundingBox}, which clause 12.2.2 makes mandatory, is the dataset's
+ *       {@code gml:boundedBy} envelope or, for datasets that declare none, the extent of the
+ *       geometry their members carry; a dataset with neither is rejected. An extent that is a
+ *       point or a line is padded to the strictly positive span the catalogue Schematron
+ *       requires of a bounding box.</li>
+ *   <li>{@code temporalExtent} is emitted only for datasets whose {@code NavwarnPreamble}
+ *       carries a {@code cancellationDate} - clause 12.2.2 uses it only "when a NAVWARN have a
+ *       known expiry date and time" and clause 9.3 cancels such a dataset by the pairing of that
+ *       date with this metadata - and then carries the preamble's {@code publicationTime} and
+ *       {@code cancellationDate}, the values clause 12.2.2 requires it to align with.</li>
+ * </ul>
+ *
+ * <p><strong>Producer responsibilities the factory cannot check.</strong> Two further entries of
+ * the profile depend on the textual content of the dataset's {@code NavwarnPreamble}, which this
+ * factory does not interpret:</p>
  * <ul>
  *   <li>{@code datasetID} is synthesised as {@code <datasetMrnPrefix>:<dataset gml id>};
  *       S-124 requires it to match the {@code interoperabilityIdentifier} of the dataset's
@@ -115,6 +143,11 @@ public final class S124ExchangeSetFactory {
     public static final String SPECIFIC_USAGE = "Navigational Warning Service";
     /** S-124 clause 9.6: "S-124 datasets must not exceed 50KB." */
     private static final int MAX_DATASET_SIZE_BYTES = 50 * 1024;
+    /**
+     * The span a degenerate dataset extent - a point or a line - is padded to before it is
+     * encoded as a bounding box; see {@link #withMinimumSpan(Geometry)}.
+     */
+    private static final double MIN_EXTENT_SPAN_DEGREES = 0.0001;
 
     // S-100 Part 17, clause 17-4.2: all S-100 content lives in the single top level root
     // folder S100_ROOT, which also holds CATALOG.XML and its signature CATALOG.SIGN.
@@ -264,7 +297,11 @@ public final class S124ExchangeSetFactory {
             // not the issuer's X.500 distinguished name, which an OEM cannot resolve against the
             // separately installed SA root certificate.
             certificateType.setIssuer(link.issuerId());
-            certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(link.certificate()));
+            // The certificate element is typed xs:base64Binary, which JAXB Base64-encodes
+            // itself, so it carries the certificate DER content: clauses 15-8.6 and
+            // 15-8.11.1 embed the certificate "with the header and footer lines omitted",
+            // i.e. one Base64 decode of the element must yield the X.509 certificate.
+            certificateType.setValue(S100ExchangeSetUtils.getDerFromCert(link.certificate()));
             certificates.getCertificates().add(certificateType);
         }
 
@@ -306,6 +343,16 @@ public final class S124ExchangeSetFactory {
      */
     private List<ChainedCertificate> certificateChain() throws CertificateException {
         return certificateChain(cfg.certificatePem, cfg.intermediateCertificatePems, CERTIFICATE_REF, "ca");
+    }
+
+    /**
+     * Orders a chain given signing certificate first - the form the public API takes one in -
+     * into a resolvable path, labelling the leaf {@code leafId} and each certificate above it
+     * {@code <intermediatePrefix>N}.
+     */
+    private List<ChainedCertificate> certificateChain(List<String> pems, String leafId,
+            String intermediatePrefix) throws CertificateException {
+        return certificateChain(pems.get(0), pems.subList(1, pems.size()), leafId, intermediatePrefix);
     }
 
     /**
@@ -398,12 +445,55 @@ public final class S124ExchangeSetFactory {
     }
 
     /**
+     * Adds a certificate chain to what the catalogue carries and returns the id its leaf ended
+     * up with - the id a signature made with that certificate has to reference.
+     * <p/>
+     * Certificates already carried - typically the domain coordinator, shared with the current
+     * chain - keep the id they were first given. Every id is settled before anything is added,
+     * so issuer references point at the id actually emitted rather than at the temporary one of
+     * a link that turned out to be a duplicate.
+     */
+    private static String carry(List<ChainedCertificate> chain,
+            Map<String, X509Certificate> certificatesById, Map<String, String> certificateIssuers) {
+        Map<String, String> settledIds = new LinkedHashMap<>();
+        for (ChainedCertificate link : chain) {
+            String existingId = idOf(certificatesById, link.certificate());
+            settledIds.put(link.id(), existingId != null ? existingId : link.id());
+        }
+        for (ChainedCertificate link : chain) {
+            String id = settledIds.get(link.id());
+            if (certificatesById.containsKey(id)) {
+                continue;
+            }
+            certificatesById.put(id, link.certificate());
+            // The topmost link's issuer is the scheme administrator, which is not a certificate
+            // id and so passes through unchanged.
+            certificateIssuers.put(id, settledIds.getOrDefault(link.issuerId(), link.issuerId()));
+        }
+        // The chain is ordered leaf first.
+        return settledIds.get(chain.get(0).id());
+    }
+
+    /**
      * Re-labels reused signatures to reference the certificate this catalogue carries for
      * them. The signature bytes are untouched - only the document scoped id changes - and
      * the caller's objects are left alone.
+     * <p/>
+     * A chained signature is reproduced as the S100_SE_SignatureOnSignature it is, keeping
+     * both of its references. S-100 Part 15, clause 15-8.8, implements signature chains "by
+     * use of a signatureRef attribute", which clause 15-8.11.5 makes mandatory (Mult 1), so
+     * demoting such a signature to a plain S100_SE_DigitalSignature would sever the chain. Its
+     * certificateRef is not redirected to the data signer's certificate either: a chained
+     * signature counter-signs the signature of another party, so it was made by a different
+     * certified identity, and clause 15-8.8 requires each signature in the chain to reference
+     * the certificate that made it. It is translated instead - from the id the original
+     * catalogue gave the counter-signer's certificate, in {@code counterSignerRefs}, to the id
+     * this catalogue carries that certificate under - because certificate ids are scoped to the
+     * document that declares them.
      */
     private static List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> withCertificateRef(
-            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> values, String certificateRef) {
+            List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> values, String certificateRef,
+            Map<String, String> counterSignerRefs) {
         ObjectFactory objectFactory = new ObjectFactory();
         List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> result = new ArrayList<>(values.size());
         for (S100DatasetDiscoveryMetadata.DigitalSignatureValue value : values) {
@@ -423,6 +513,49 @@ public final class S124ExchangeSetFactory {
                 signature.setDataStatus(onData.getDataStatus());
                 signature.setCertificateRef(certificateRef);
                 copy.setS100SEDigitalSignature(objectFactory.createS100SESignatureOnData(signature));
+            } else if (original instanceof S100SESignatureOnSignature onSignature) {
+                if (onSignature.getSignatureRef() == null || onSignature.getSignatureRef().isBlank()) {
+                    throw new ExchangeSetException(String.format(
+                            "The reused signature %s of the cancelled dataset is an "
+                                    + "S100_SE_SignatureOnSignature but references no signature, "
+                                    + "and S-100 Part 15, clause 15-8.11.5, makes its signatureRef "
+                                    + "mandatory - clause 15-8.8 chains signatures by nothing else",
+                            onSignature.getId()));
+                }
+                if (onSignature.getCertificateRef() == null || onSignature.getCertificateRef().isBlank()) {
+                    throw new ExchangeSetException(String.format(
+                            "The reused signature %s of the cancelled dataset counter-signs "
+                                    + "signature %s but references no certificate; the certificate "
+                                    + "of the party that made it cannot be inferred, and S-100 Part "
+                                    + "15, clause 15-8.8, requires each signature in the chain to "
+                                    + "have a valid certificateRef",
+                            onSignature.getId(), onSignature.getSignatureRef()));
+                }
+                String counterSignerRef = counterSignerRefs.get(onSignature.getCertificateRef());
+                if (counterSignerRef == null) {
+                    throw new ExchangeSetException(String.format(
+                            "The reused signature %s of the cancelled dataset counter-signs "
+                                    + "signature %s with the certificate its original catalogue "
+                                    + "called \"%s\", which this exchange set does not carry; supply "
+                                    + "that certificate chain as the counterSignerCertificatePems "
+                                    + "entry \"%s\" of the cancellation. S-100 Part 15, clause "
+                                    + "15-8.7, requires every "
+                                    + "certificate needed to authenticate a signature to travel with "
+                                    + "the exchange set, and clause 15-8.11.5 defines certificateRef "
+                                    + "as the \"Identifier of the certificate against which the "
+                                    + "digital signature validates\", so a reference to a certificate "
+                                    + "no catalogue element declares leaves the chain unverifiable",
+                            onSignature.getId(), onSignature.getSignatureRef(),
+                            onSignature.getCertificateRef(), onSignature.getCertificateRef()));
+                }
+                S100SESignatureOnSignature signature = new S100SESignatureOnSignature();
+                signature.setId(onSignature.getId());
+                signature.setValue(onSignature.getValue());
+                signature.setSignatureRef(onSignature.getSignatureRef());
+                // Not the data signer's certificate: the counter-signer is a different certified
+                // identity, carried under an id of this catalogue's own.
+                signature.setCertificateRef(counterSignerRef);
+                copy.setS100SEDigitalSignature(objectFactory.createS100SESignatureOnSignature(signature));
             } else {
                 S100SEDigitalSignature signature = new S100SEDigitalSignature();
                 signature.setId(original.getId());
@@ -495,50 +628,61 @@ public final class S124ExchangeSetFactory {
         // it has to travel with the exchange set too, otherwise the reused signature resolves
         // to the wrong key and cannot be verified (S-100 Part 15, clause 15-8.7).
         Map<Cancellation, String> cancellationCertificateRefs = new LinkedHashMap<>();
+        // The same holds for the certificate of every party that counter-signed that signature:
+        // clause 15-8.7 requires the exchange set to carry "all the certificates required to
+        // perform a full certificate path validation without any external access", and clause
+        // 15-8.11.5 defines certificateRef as the "Identifier of the certificate against which
+        // the digital signature validates" - which an id no carried certificate has is not. The
+        // ids of this catalogue are its own, so the ref the original catalogue used is
+        // translated to the id the certificate is carried under here.
+        Map<Cancellation, Map<String, String>> counterSignerRefs = new LinkedHashMap<>();
         int cancellationIndex = 0;
+        int counterSignerIndex = 0;
         for (Cancellation cancellation : cfg.cancellations) {
+            Map<String, String> refs = new LinkedHashMap<>();
+            for (Map.Entry<String, List<String>> counterSigner
+                    : cancellation.counterSignerCertificatePems().entrySet()) {
+                counterSignerIndex++;
+                refs.put(counterSigner.getKey(), carry(
+                        certificateChain(counterSigner.getValue(), "cerS" + counterSignerIndex,
+                                "caS" + counterSignerIndex + "."),
+                        certificatesById, certificateIssuers));
+            }
+            counterSignerRefs.put(cancellation, refs);
             if (cancellation.certificatePems().isEmpty()) {
                 // No certificate supplied: the signature was made with the current one.
                 cancellationCertificateRefs.put(cancellation, CERTIFICATE_REF);
                 continue;
             }
             cancellationIndex++;
-            String leafId = "cerC" + cancellationIndex;
-            List<ChainedCertificate> cancellationChain = certificateChain(
-                    cancellation.certificatePems().get(0),
-                    cancellation.certificatePems().subList(1, cancellation.certificatePems().size()),
-                    leafId, "caC" + cancellationIndex + ".");
-            // Certificates already carried - typically the domain coordinator, shared with the
-            // current chain - keep the id they were first given. Settle every id before
-            // emitting anything, so issuer references point at the id actually emitted rather
-            // than at the temporary one of a link that turned out to be a duplicate.
-            Map<String, String> settledIds = new LinkedHashMap<>();
-            for (ChainedCertificate link : cancellationChain) {
-                String existingId = idOf(certificatesById, link.certificate());
-                settledIds.put(link.id(), existingId != null ? existingId : link.id());
-            }
-            for (ChainedCertificate link : cancellationChain) {
-                String id = settledIds.get(link.id());
-                if (certificatesById.containsKey(id)) {
-                    continue;
-                }
-                certificatesById.put(id, link.certificate());
-                // The topmost link's issuer is the scheme administrator, which is not a
-                // certificate id and so passes through unchanged.
-                certificateIssuers.put(id, settledIds.getOrDefault(link.issuerId(), link.issuerId()));
-            }
-            cancellationCertificateRefs.put(cancellation, settledIds.get(leafId));
+            cancellationCertificateRefs.put(cancellation, carry(
+                    certificateChain(cancellation.certificatePems(), "cerC" + cancellationIndex,
+                            "caC" + cancellationIndex + "."),
+                    certificatesById, certificateIssuers));
         }
         catBuilder.setCertificates(certificatesById).setCertificateIssuers(certificateIssuers);
 
         for (DatasetFile df : datasetFiles) {
-            Geometry bbox = GeometryS124Converter.envelopeToJts(df.dataset.getBoundedBy());
+            Geometry bbox = datasetExtent(df);
             DataSetIdentificationType ident = df.dataset.getDatasetIdentificationInformation();
             LocalDate issueDate = Optional.ofNullable(ident)
                     .map(DataSetIdentificationType::getDatasetReferenceDate)
                     .orElseGet(LocalDate::now);
+            // S-124 clause 12.2.2: the temporal extent "is only used when a NAVWARN have a
+            // known expiry date and time. When used the values must align with the
+            // publicationTime and cancellationDate attributes of the dataset NavwarnPreamble".
+            // Clause 9.3 cancels a dataset by that pairing - "Populating the cancellationDate
+            // attribute in the dataset and the temporalExtent in the metadata (see 12.2.2), and
+            // that date has passed" - so the extent is read off the preamble rather than
+            // configured: a caller supplied value could only disagree with the dataset.
+            NavwarnPreamble preamble = preambleOf(df.dataset);
+            LocalDateTime cancellationDate = preamble == null ? null : utc(preamble.getCancellationDate());
+            // Clause 12.2.2.2: "if both are known, both must be populated". Without a known
+            // expiry there is no temporal extent at all, so the publication time is only
+            // carried alongside a cancellation date.
+            LocalDateTime publicationTime = cancellationDate == null ? null : utc(preamble.getPublicationTime());
 
-            catBuilder.addDatasetMetadata(builder -> builder
+            catBuilder.addDatasetMetadata(builder -> s124Profile(builder
                     .setFileName("file:/" + df.fileName)
                     .setDatasetID(cfg.datasetMrnPrefix + ":" + df.uuid)
                     .setDescription(Optional.ofNullable(ident).map(DataSetIdentificationType::getDatasetAbstract).orElse(null))
@@ -551,11 +695,13 @@ public final class S124ExchangeSetFactory {
                     .setPurpose(S100Purpose.NEW_DATASET)
                     .setNotForNavigation(cfg.notForNavigation)
                     .setSpecificUsage(cfg.specificUsage)
-                    .setEditionNumber(BigInteger.ONE)
-                    .setUpdateNumber(BigInteger.ZERO)
+                    // No editionNumber and no updateNumber: the S-124 clause 12.2.2 profile has
+                    // no such attributes (see s124Profile).
                     .setIssueDate(issueDate)
                     .setIssueTime(LocalTime.MIDNIGHT)
                     .setBoundingBox(bbox)
+                    .setTimeInstantBegin(publicationTime)
+                    .setTimeInstantEnd(cancellationDate)
                     .setProductSpecification(cfg.productSpecification)
                     .setProducingAgency(cfg.organization)
                     .setProducingAgencyRole(cfg.producingAgencyRole)
@@ -570,15 +716,13 @@ public final class S124ExchangeSetFactory {
                     .setProducingAgencyContactInstructions(cfg.contactInstructions)
                     .setProducerCode(cfg.producerCode)
                     .setEncodingFormat(S100EncodingFormat.GML)
-                    .setDataCoverages(bbox)
                     .setComment(cfg.datasetComment)
                     .setMetadataDateStamp(LocalDate.now(ZoneOffset.UTC))
-                    .setReplacedData(false)
-                    // No navigationPurpose: the S-124 clause 12.2.2 profile has no such attribute.
-                    .setMaintenanceFrequency(cfg.maintenanceDate == null ? null : cfg.maintenanceFrequency)
-                    .setMaintenanceDate(cfg.maintenanceDate)
+                    // No dataCoverage, no replacedData, no resourceMaintenance and no
+                    // navigationPurpose: the S-124 clause 12.2.2 profile has no such attributes
+                    // (see s124Profile).
                     .setDigitalSignatureReference(cfg.signatureAlgorithm)
-                    .build(df.bytes));
+                    .build(df.bytes)));
         }
 
         // Fileless cancellations (S-100 Part 17, clause 17-4.4.1): a discovery-metadata entry
@@ -593,7 +737,8 @@ public final class S124ExchangeSetFactory {
             entry.setPurpose(S100Purpose.CANCELLATION);
             entry.setIssueDate(cancellation.issueDate());
             List<S100DatasetDiscoveryMetadata.DigitalSignatureValue> signatures = withCertificateRef(
-                    entry.getDigitalSignatureValues(), cancellationCertificateRefs.get(cancellation));
+                    entry.getDigitalSignatureValues(), cancellationCertificateRefs.get(cancellation),
+                    counterSignerRefs.get(cancellation));
             entry.getDigitalSignatureValues().clear();
             entry.getDigitalSignatureValues().addAll(signatures);
             catBuilder.addDatasetMetadata(builder -> entry);
@@ -604,6 +749,182 @@ public final class S124ExchangeSetFactory {
         } catch (java.security.cert.CertificateEncodingException e) {
             throw new CertificateException(e);
         }
+    }
+
+    /**
+     * Applies the restriction of S-124 clause 12.1 to a finished dataset entry: "the
+     * S100_DatasetDiscoveryMetadata is further restricted to remove attributes that are not
+     * relevant to a Navigational Warning service."
+     * <p/>
+     * Neither the clause 12.2.2 encoding table nor the metadata model figure of clause 12.1
+     * carries editionNumber, updateNumber, dataCoverage, replacedData or resourceMaintenance -
+     * consistent with clause 9.4, "S-124 does not support delta changes to issued S-124
+     * datasets" - so none of them is encoded here. Four of the five are simply never handed to
+     * the shared S-100 builder; replacedData is dropped afterwards instead, because the builder
+     * takes it as a primitive boolean and so always encodes it.
+     */
+    private static S100DatasetDiscoveryMetadata s124Profile(S100DatasetDiscoveryMetadata metadata) {
+        metadata.setReplacedData(null);
+        return metadata;
+    }
+
+    /**
+     * The extent of a dataset, as the mandatory bounding box of its discovery metadata.
+     * <p/>
+     * S-124 clause 12.2.2 tightens the multiplicity S-100 Part 17 gives boundingBox to 1:
+     * "boundingBox | The extent of the dataset limits | 1 | EX_GeographicBoundingBox". The
+     * dataset's own {@code gml:boundedBy} is used whenever it declares one; that element is
+     * optional in the S-100 GML profile, so for the datasets which omit it the extent is
+     * derived from the geometry of the dataset's members instead. A dataset that carries
+     * neither has no extent to describe and is rejected, rather than packaged behind a
+     * catalogue entry missing a mandatory element. Either way the extent is padded to a
+     * strictly positive span, the only form the catalogue can encode (see
+     * {@link #withMinimumSpan(Geometry)}).
+     */
+    private static Geometry datasetExtent(DatasetFile df) {
+        Geometry declared = GeometryS124Converter.envelopeToJts(df.dataset.getBoundedBy());
+        if (declared != null) {
+            return withMinimumSpan(declared);
+        }
+        Geometry derived;
+        try {
+            derived = memberExtent(df.dataset);
+        } catch (RuntimeException e) {
+            throw new ExchangeSetException(String.format(
+                    "The S-124 dataset packaged as %s declares no gml:boundedBy and its member "
+                            + "geometry cannot be read, so the extent required by S-124 clause "
+                            + "12.2.2 (boundingBox, multiplicity 1) cannot be derived; declare "
+                            + "the dataset's gml:boundedBy envelope",
+                    df.fileName), e);
+        }
+        if (derived == null) {
+            throw new ExchangeSetException(String.format(
+                    "The S-124 dataset packaged as %s declares no gml:boundedBy and carries no "
+                            + "member geometry, so it has no extent; S-124 clause 12.2.2 makes "
+                            + "boundingBox mandatory (multiplicity 1) in the dataset discovery "
+                            + "metadata",
+                    df.fileName));
+        }
+        return withMinimumSpan(derived);
+    }
+
+    /**
+     * The extent padded to a strictly positive span in both dimensions, the only shape the
+     * exchange catalogue can encode as a bounding box.
+     * <p/>
+     * The most common NAVWARN extent is a single position - a wreck or an obstruction - and a
+     * curve of constant latitude is degenerate in one dimension too, so the geographic extent
+     * of a dataset is regularly a point or a line. The S-100 Part 17 catalogue Schematron
+     * (S100_XC.sch, pattern S100_ValidBBoxPattern) rejects such a bounding box: it asserts,
+     * at error level, that "northBoundLatitude ... must be greater than southBoundLatitude",
+     * and warns unless westBoundLongitude is less than eastBoundLongitude. A degenerate extent
+     * is therefore padded outwards to {@value #MIN_EXTENT_SPAN_DEGREES} degrees - about 11 m,
+     * far below the positional accuracy any NAVWARN position is stated with, and the box still
+     * contains the geometry it describes. The padding never leaves the coordinate domain the
+     * same pattern asserts ("values are latitude and longitude in decimal degrees in +/-90 or
+     * +/-180 range"): a box that would cross a pole or the antimeridian is shifted back inside
+     * it instead of being widened past it.
+     */
+    private static Geometry withMinimumSpan(Geometry extent) {
+        Envelope envelope = extent.getEnvelopeInternal();
+        if (envelope.getWidth() >= MIN_EXTENT_SPAN_DEGREES
+                && envelope.getHeight() >= MIN_EXTENT_SPAN_DEGREES) {
+            return extent;
+        }
+        double[] longitudes = paddedRange(envelope.getMinX(), envelope.getMaxX(), -180.0, 180.0);
+        double[] latitudes = paddedRange(envelope.getMinY(), envelope.getMaxY(), -90.0, 90.0);
+        return new GeometryFactory(new PrecisionModel(), 4326)
+                .toGeometry(new Envelope(longitudes[0], longitudes[1], latitudes[0], latitudes[1]));
+    }
+
+    /**
+     * The range {@code [min, max]} padded to the minimum span, staying within
+     * {@code [floor, ceiling]} and still containing the original range.
+     */
+    private static double[] paddedRange(double min, double max, double floor, double ceiling) {
+        double missing = MIN_EXTENT_SPAN_DEGREES - (max - min);
+        if (missing <= 0) {
+            return new double[] {min, max};
+        }
+        double paddedMin = min - missing / 2;
+        double paddedMax = max + missing / 2;
+        // At most one of the two corrections is ever non-zero: the domain is orders of
+        // magnitude wider than the padding.
+        double shift = Math.max(0, floor - paddedMin) - Math.max(0, paddedMax - ceiling);
+        return new double[] {paddedMin + shift, paddedMax + shift};
+    }
+
+    /**
+     * The union of the extents of the geometry the dataset's members carry, as a JTS geometry
+     * in EPSG:4326, or {@code null} when no member carries any geometry.
+     */
+    private static Geometry memberExtent(Dataset dataset) {
+        Envelope extent = new Envelope();
+        for (S100SpatialAttributeType property : spatialProperties(dataset)) {
+            // One property at a time: the converter unions the list it is handed, and a union
+            // across the mixed geometry types of a warning is neither needed for an extent nor
+            // always defined.
+            extent.expandToInclude(GeometryS124Converter
+                    .pointCurveSurfaceToGeometry(Collections.singletonList(property))
+                    .getEnvelopeInternal());
+        }
+        if (extent.isNull()) {
+            return null;
+        }
+        return new GeometryFactory(new PrecisionModel(), 4326).toGeometry(extent);
+    }
+
+    /** Every point, curve and surface property carried by the dataset's members. */
+    private static List<S100SpatialAttributeType> spatialProperties(Dataset dataset) {
+        List<S100SpatialAttributeType> properties = new ArrayList<>();
+        for (AbstractGMLType member : members(dataset)) {
+            if (member instanceof NavwarnPart part) {
+                for (NavwarnPart.Geometry geometry : part.getGeometries()) {
+                    addAll(properties, geometry.getPointProperty(), geometry.getCurveProperty(),
+                            geometry.getSurfaceProperty());
+                }
+            } else if (member instanceof NavwarnAreaAffected area) {
+                for (NavwarnAreaAffected.Geometry geometry : area.getGeometries()) {
+                    addAll(properties, geometry.getPointProperty(), geometry.getCurveProperty(),
+                            geometry.getSurfaceProperty());
+                }
+            } else if (member instanceof TextPlacement textPlacement
+                    && textPlacement.getGeometry() != null) {
+                addAll(properties, textPlacement.getGeometry().getPointProperty());
+            }
+        }
+        return properties;
+    }
+
+    private static void addAll(List<S100SpatialAttributeType> target, S100SpatialAttributeType... properties) {
+        for (S100SpatialAttributeType property : properties) {
+            if (property != null) {
+                target.add(property);
+            }
+        }
+    }
+
+    /**
+     * The dataset's NavwarnPreamble, the feature S-124 clause 12.2.2 aligns the temporal extent
+     * with, or {@code null} when the dataset carries none.
+     */
+    private static NavwarnPreamble preambleOf(Dataset dataset) {
+        return members(dataset).stream()
+                .filter(NavwarnPreamble.class::isInstance)
+                .map(NavwarnPreamble.class::cast)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static List<AbstractGMLType> members(Dataset dataset) {
+        return Optional.ofNullable(dataset.getMembers())
+                .map(Dataset.Members::getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements)
+                .orElseGet(Collections::emptyList);
+    }
+
+    /** The instant as a UTC date and time, the form the catalogue encodes it in. */
+    private static LocalDateTime utc(OffsetDateTime dateTime) {
+        return dateTime == null ? null : dateTime.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
     }
 
     private String datasetUuid(Dataset dataset) {
@@ -640,28 +961,50 @@ public final class S124ExchangeSetFactory {
      * rebuilt field by field from the current configuration, which may have moved on since
      * the dataset was issued. Take it from the catalogue that published the dataset.</p>
      *
-     * @param original        the cancelled dataset's discovery metadata, reproduced verbatim
-     *                        apart from the issue date and purpose; copied, never modified
-     * @param issueDate       the issue date of the cancellation itself, the one field the
-     *                        clause excepts from reproduction
-     * @param certificatePems the chain that verifies the reused signature, signing certificate
-     *                        first; empty means the exchange set's current Data Server
-     *                        certificate signed it
+     * <p>An entry whose signature was counter-signed - S-100 Part 15, clause 15-8.8, chains
+     * signatures with S100_SE_SignatureOnSignature - reproduces that chained signature too, so
+     * the counter-signer's certificate has to travel with this exchange set as well: clause
+     * 15-8.7 requires it to hold "all the certificates required to perform a full certificate
+     * path validation without any external access". Supply it keyed by the certificateRef the
+     * chained signature carries in the original entry; the reproduced entry references the
+     * certificate under the id this catalogue gives it. A chained signature whose certificate
+     * is not supplied is rejected rather than emitted with a reference nothing resolves.</p>
+     *
+     * @param original                     the cancelled dataset's discovery metadata,
+     *                                     reproduced verbatim apart from the issue date and
+     *                                     purpose; copied, never modified
+     * @param issueDate                    the issue date of the cancellation itself, the one
+     *                                     field the clause excepts from reproduction
+     * @param certificatePems              the chain that verifies the reused signature, signing
+     *                                     certificate first; empty means the exchange set's
+     *                                     current Data Server certificate signed it
+     * @param counterSignerCertificatePems the chain of each party that counter-signed the
+     *                                     reused signature, signing certificate first, keyed by
+     *                                     the certificateRef the original entry's chained
+     *                                     signature carries
      */
     public record Cancellation(
             S100DatasetDiscoveryMetadata original,
             LocalDate issueDate,
-            List<String> certificatePems) {
+            List<String> certificatePems,
+            Map<String, List<String>> counterSignerCertificatePems) {
 
         /** A cancellation whose original was signed with the current Data Server certificate. */
         public Cancellation(S100DatasetDiscoveryMetadata original, LocalDate issueDate) {
-            this(original, issueDate, List.of());
+            this(original, issueDate, List.of(), Map.of());
+        }
+
+        /** A cancellation whose reused signature carries no counter-signature. */
+        public Cancellation(S100DatasetDiscoveryMetadata original, LocalDate issueDate,
+                List<String> certificatePems) {
+            this(original, issueDate, certificatePems, Map.of());
         }
 
         public Cancellation {
             Objects.requireNonNull(original, "cancellation original metadata must be set");
             Objects.requireNonNull(issueDate, "cancellation issueDate must be set");
             certificatePems = certificatePems == null ? List.of() : List.copyOf(certificatePems);
+            counterSignerCertificatePems = copyOfChains(counterSignerCertificatePems);
             if (original.getFileName() == null || original.getFileName().isBlank()) {
                 throw new IllegalArgumentException("cancellation original must carry the file name "
                         + "of the dataset being cancelled (S-100 Part 17, clause 17-4.4.1)");
@@ -671,6 +1014,30 @@ public final class S124ExchangeSetFactory {
                         + "digital signature (S-100 Part 17 clause 17-4.4.1: a fileless cancellation "
                         + "reuses the original signature)");
             }
+        }
+
+        /** An unmodifiable copy of the counter-signer chains, each of which must be usable. */
+        private static Map<String, List<String>> copyOfChains(Map<String, List<String>> chains) {
+            if (chains == null) {
+                return Map.of();
+            }
+            Map<String, List<String>> copy = new LinkedHashMap<>();
+            chains.forEach((certificateRef, pems) -> {
+                if (certificateRef == null || certificateRef.isBlank()) {
+                    throw new IllegalArgumentException("counter-signer certificate chains must be "
+                            + "keyed by the certificateRef the original entry's chained signature "
+                            + "carries");
+                }
+                if (pems == null || pems.isEmpty()) {
+                    throw new IllegalArgumentException(String.format(
+                            "no certificate supplied for the counter-signer of \"%s\", so the reused "
+                                    + "chained signature could not be authenticated (S-100 Part 15, "
+                                    + "clause 15-8.7)",
+                            certificateRef));
+                }
+                copy.put(certificateRef, List.copyOf(pems));
+            });
+            return Collections.unmodifiableMap(copy);
         }
     }
 
@@ -710,11 +1077,6 @@ public final class S124ExchangeSetFactory {
         private boolean notForNavigation = true;
         private SecurityClassification classification = SecurityClassification.UNCLASSIFIED;
         private RoleCode producingAgencyRole = RoleCode.CUSTODIAN;
-        // S-100 Part 17 restricts MD_MaintenanceFrequencyCode to asNeeded and irregular.
-        private MaintenanceFrequency maintenanceFrequency = MaintenanceFrequency.AS_NEEDED;
-        // resourceMaintenance is optional (0..1) but MD_MaintenanceInformation requires the
-        // frequency and a maintenance date together, so it is only encoded when a date is given.
-        private LocalDate maintenanceDate;
         private String onlineResource;
         private String contactInstructions;
 
@@ -787,27 +1149,6 @@ public final class S124ExchangeSetFactory {
         public Builder notForNavigation(boolean v) { this.notForNavigation = v; return this; }
         public Builder classification(SecurityClassification c) { this.classification = c; return this; }
         public Builder producingAgencyRole(RoleCode role) { this.producingAgencyRole = role; return this; }
-        /**
-         * Overrides the dataset entries' maintenance frequency. S-100 Part 17 restricts
-         * MD_MaintenanceFrequencyCode in discovery metadata to {@code asNeeded} and
-         * {@code irregular}; all other ISO 19115-1 values are rejected.
-         */
-        public Builder maintenanceFrequency(MaintenanceFrequency f) {
-            if (f != MaintenanceFrequency.AS_NEEDED && f != MaintenanceFrequency.IRREGULAR) {
-                throw new IllegalArgumentException("maintenanceFrequency must be asNeeded or "
-                        + "irregular (S-100 Part 17 restricts MD_MaintenanceFrequencyCode to these values)");
-            }
-            this.maintenanceFrequency = f;
-            return this;
-        }
-
-        /**
-         * Date of the resource maintenance. Encoding {@code resourceMaintenance} at all is
-         * optional, but S-100 Part 17 MD_MaintenanceInformation requires the maintenance
-         * frequency and this date together, so no maintenance information is encoded unless
-         * this is set.
-         */
-        public Builder maintenanceDate(LocalDate d) { this.maintenanceDate = d; return this; }
 
         /**
          * Identity of the S-100 Scheme Administrator that issued the Data Server certificate,

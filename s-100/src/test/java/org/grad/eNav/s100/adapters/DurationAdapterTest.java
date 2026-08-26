@@ -36,6 +36,20 @@ class DurationAdapterTest {
     void testMarshalUsesIsoForm() {
         assertEquals("PT100H", this.durationAdapter.marshal(Duration.ofHours(100)));
         assertEquals("PT24H", this.durationAdapter.marshal(Duration.ofDays(1)));
+        assertEquals("PT0S", this.durationAdapter.marshal(Duration.ZERO));
+    }
+
+    /**
+     * Test that negative durations are marshalled with the single leading
+     * minus of the xs:duration lexical space, rather than with the
+     * component-level signs of Duration.toString() (e.g. PT-100H) which the
+     * unsigned integer components of xs:duration do not allow.
+     */
+    @Test
+    void testMarshalSignsNegativeDurationsWithALeadingMinus() {
+        assertEquals("-PT100H", this.durationAdapter.marshal(Duration.ofHours(-100)));
+        assertEquals("-PT1H30M", this.durationAdapter.marshal(Duration.ofHours(-1).minusMinutes(30)));
+        assertEquals("-PT24H", this.durationAdapter.marshal(Duration.ofDays(-1)));
     }
 
     /**
@@ -87,6 +101,16 @@ class DurationAdapterTest {
     void testMarshalUnmarshalRoundTrip() {
         final Duration duration = Duration.ofDays(100);
         assertEquals(duration, this.durationAdapter.unmarshal(this.durationAdapter.marshal(duration)));
+    }
+
+    /**
+     * Test that a negative duration accepted by unmarshalling round-trips
+     * back to the same lexical representation.
+     */
+    @Test
+    void testMarshalUnmarshalRoundTripForNegativeDurations() {
+        assertEquals("-PT100H", this.durationAdapter.marshal(this.durationAdapter.unmarshal("-PT100H")));
+        assertEquals(Duration.ofHours(-100), this.durationAdapter.unmarshal(this.durationAdapter.marshal(Duration.ofHours(-100))));
     }
 
 }

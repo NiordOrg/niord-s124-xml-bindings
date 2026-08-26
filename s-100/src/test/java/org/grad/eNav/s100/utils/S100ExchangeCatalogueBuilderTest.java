@@ -32,9 +32,12 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -251,7 +254,11 @@ class S100ExchangeCatalogueBuilderTest {
         assertNotNull(exchangeCatalogue.getCertificates().get(0).getCertificates().get(0));
         assertEquals("CRT1", exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getId());
         assertEquals("IHO", exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getIssuer());
-        assertNotNull(exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getValue());
+        // The certificate element is typed xs:base64Binary, so its value carries
+        // the DER content of the certificate and JAXB performs the single Base64
+        // encoding required by S-100 Part 15 cl. 15-8.6 and 15-8.11.1
+        assertArrayEquals(certificate.getEncoded(),
+                exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getValue());
 
         // Assess the file metadata
         assertNotNull(exchangeCatalogue.getDatasetDiscoveryMetadata());
@@ -322,6 +329,48 @@ class S100ExchangeCatalogueBuilderTest {
         assertEquals("root", exchangeCatalogue.getCertificates().get(0).getSchemeAdministrator().getId());
         assertEquals(1, exchangeCatalogue.getCertificates().get(0).getCertificates().size());
         assertEquals("root", exchangeCatalogue.getCertificates().get(0).getCertificates().get(0).getIssuer());
+    }
+
+    /**
+     * Test that an embedded certificate reaches the marshalled catalogue Base64
+     * encoded exactly once. S-100 Part 15, clauses 15-8.6 and 15-8.11.1, embed
+     * "a signed Public Key certificate" as a "Base 64 encoded Character String"
+     * with the PEM header and footer lines omitted, so a single Base64 decode of
+     * the element content must yield the X.509 certificate itself - an OEM which
+     * decodes it once has to end up with parseable DER, not with Base64 text.
+     */
+    @Test
+    void testBuildCertificateIsBase64EncodedOnlyOnce() throws IOException, CertificateException, JAXBException {
+        // Load an X.509 certificate
+        final InputStream in = ClassLoader.getSystemResourceAsStream("test.pem");
+        assertNotNull(in);
+        final String certificatePem = new String(in.readAllBytes(), StandardCharsets.UTF_8)
+                .replaceAll("-----BEGIN CERTIFICATE-----","")
+                .replaceAll("-----END CERTIFICATE-----","")
+                .replaceAll("\\s","");
+        final X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(certificatePem);
+
+        // Build and marshal a catalogue carrying that certificate
+        final S100ExchangeCatalogue exchangeCatalogue = this.s100ExchangeCatalogueBuilder
+                .setIdentifier("identifier")
+                .setDateTime(LocalDateTime.parse("2023-01-01T00:00:00.000", this.dateTimeFormat))
+                .setOrganization("organisation")
+                .setLocales(Collections.singletonList(Locale.UK))
+                .setCertificates(Collections.singletonMap("CRT1", certificate))
+                .build();
+        final String xml = S100ExchangeSetUtils.marshalS100ExchangeSetCatalogue(exchangeCatalogue);
+
+        // Pick the content of the marshalled certificate element
+        final Matcher matcher = Pattern
+                .compile("<(?:[\\w.-]+:)?certificate[^>]*>([^<]*)</(?:[\\w.-]+:)?certificate>")
+                .matcher(xml);
+        assertTrue(matcher.find(), "no certificate element in the marshalled catalogue");
+        final String elementContent = matcher.group(1);
+
+        // It is the PEM body of the certificate, and decodes to it in one step
+        assertEquals(certificatePem, elementContent);
+        assertArrayEquals(certificate.getEncoded(), Base64.getDecoder().decode(elementContent));
+        assertEquals(certificate, S100ExchangeSetUtils.getCertFromPem(elementContent));
     }
 
     /**

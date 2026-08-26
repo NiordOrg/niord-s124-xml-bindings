@@ -2,21 +2,29 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.StringReader;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
@@ -28,11 +36,13 @@ import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
 import javax.xml.validation.Validator;
 
-import org.grad.eNav.s100.enums.MaintenanceFrequency;
 import org.grad.eNav.s100.utils.S100ExchangeSetUtils;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.PrecisionModel;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXParseException;
 
@@ -41,23 +51,38 @@ import dk.dma.niord.s100.catalog._5_2.S100CompliancyCategory;
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
 import org.grad.eNav.s100.enums.SecurityClassification;
+import dk.dma.niord.s100.catalog._5_2.S100GeographicBoundingBoxType;
 import dk.dma.niord.s100.catalog._5_2.S100ProductSpecification;
 import dk.dma.niord.s100.catalog._5_2.S100Purpose;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
 import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignatureReference;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateType;
+import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignature;
 import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnData;
+import dk.dma.niord.s100.catalog._5_2.S100SESignatureOnSignature;
+import dk.dma.niord.s100.catalog._5_2.S100TemporalExtent;
 import dk.dma.niord.s100.catalog._5_2.StandaloneDigitalSignature;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.CurveProperty;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.PointProperty;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.S100SpatialAttributeType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.SurfaceProperty;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.DataSetIdentificationTypeImpl;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.AbstractGMLType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.BoundingShapeTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.EnvelopeTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.PosImpl;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPart;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPreamble;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.ObjectFactory;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
 import jakarta.xml.bind.JAXBContext;
 
 class S124ExchangeSetFactoryTest {
+
+    /** The content of a certificate element, whatever namespace prefix it is marshalled with. */
+    private static final Pattern CERTIFICATE_ELEMENT =
+            Pattern.compile("<(?:[\\w.-]+:)?certificate[^>]*>([^<]*)</(?:[\\w.-]+:)?certificate>");
 
     private static String testCertPem;
 
@@ -130,9 +155,10 @@ class S124ExchangeSetFactoryTest {
         assertThat(meta.get(0).getFileName()).startsWith("file:/124DK00");
         assertThat(meta.get(0).getProducerCode()).isEqualTo("DK00");
         assertThat(meta.get(0).getDigitalSignatureValues()).hasSize(1);
-        // S-124 datasets are always new: edition 1, update number 0 (never null/absent).
-        assertThat(meta.get(0).getEditionNumber()).isEqualTo(BigInteger.ONE);
-        assertThat(meta.get(0).getUpdateNumber()).isEqualTo(BigInteger.ZERO);
+        // S-124 clause 12.1 removes editionNumber and updateNumber from the dataset discovery
+        // metadata, so an S-124 entry carries neither.
+        assertThat(meta.get(0).getEditionNumber()).isNull();
+        assertThat(meta.get(0).getUpdateNumber()).isNull();
 
         S100SECertificateContainerType certContainer = catalogue.getCertificates().get(0);
         assertThat(certContainer.getCertificates()).hasSize(1);
@@ -186,32 +212,51 @@ class S124ExchangeSetFactoryTest {
     }
 
     /**
-     * The dataset entries must follow the fixed values of the S-124 clause 12.2.2 discovery
-     * metadata profile and the algorithm/codelist restrictions of S-100 Parts 15 and 17.
-     */
-    /**
-     * S-100 Part 17 MD_MaintenanceInformation requires the frequency and a maintenance date
-     * together, and restricts MD_MaintenanceFrequencyCode to asNeeded / irregular.
+     * S-100 Part 15, clauses 15-8.6 and 15-8.11.1: an embedded certificate is "a signed Public
+     * Key certificate ... Base 64 encoded", written with "the header and footer lines omitted".
+     * An OEM therefore decodes the element content once and must hold the X.509 certificate in
+     * DER form - a second Base64 layer would leave it with text it cannot parse, so neither
+     * CATALOG.XML nor CATALOG.SIGN may encode the certificate twice.
      */
     @Test
-    void configuredMaintenanceDateEmitsAllowedFrequency() throws Exception {
+    void embeddedCertificatesAreBase64EncodedExactlyOnce() throws Exception {
         byte[] zipBytes = S124ExchangeSetFactory.builder()
-                .datasets(List.of(newDataset("DK.S124.maintenance")))
+                .datasets(List.of(newDataset("DK.S124.single-base64")))
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
                 .signer((alg, payload) -> new byte[64])
                 .phone("+4572196000")
-                .maintenanceDate(LocalDate.of(2026, 1, 15))
                 .build()
                 .toBytes();
 
-        String catalogXml = new String(unzip(zipBytes).get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
-        assertThat(catalogXml)
-                .as("CATALOG.XML:%n%s", catalogXml)
-                .contains("asNeeded")
-                .contains("2026-01-15")
-                .doesNotContain("continual");
+        Map<String, byte[]> entries = unzip(zipBytes);
+        X509Certificate configured = S100ExchangeSetUtils.getCertFromPem(testCertPem);
+
+        for (String file : List.of("S100_ROOT/CATALOG.XML", "S100_ROOT/CATALOG.SIGN")) {
+            String xml = new String(entries.get(file), StandardCharsets.UTF_8);
+            Matcher matcher = CERTIFICATE_ELEMENT.matcher(xml);
+            assertThat(matcher.find()).as("no certificate element in %s:%n%s", file, xml).isTrue();
+            String elementContent = matcher.group(1);
+
+            // The element content is the PEM body of the configured certificate ...
+            assertThat(elementContent).as("certificate content of %s", file).isEqualTo(testCertPem);
+
+            // ... so a single Base64 decode yields parseable DER, not Base64 text again.
+            byte[] der = Base64.getDecoder().decode(elementContent);
+            X509Certificate decoded = (X509Certificate) CertificateFactory.getInstance("X.509")
+                    .generateCertificate(new ByteArrayInputStream(der));
+            assertThat(decoded).as("certificate of %s", file).isEqualTo(configured);
+        }
+
+        // The unmarshalled values - what JAXB hands a consumer after that one decode - are the
+        // certificate DER content in both files as well.
+        assertThat(catalogueOf(zipBytes).getCertificates().get(0).getCertificates().get(0).getValue())
+                .isEqualTo(configured.getEncoded());
+        StandaloneDigitalSignature signature = unmarshalSignature(
+                new String(entries.get("S100_ROOT/CATALOG.SIGN"), StandardCharsets.UTF_8));
+        assertThat(signature.getCertificates().getCertificates().get(0).getValue())
+                .isEqualTo(configured.getEncoded());
     }
 
     /**
@@ -375,7 +420,7 @@ class S124ExchangeSetFactoryTest {
         Map<String, String> certificatePemById = catalogue.getCertificates().get(0).getCertificates()
                 .stream()
                 .collect(Collectors.toMap(S100SECertificateType::getId,
-                        c -> new String(c.getValue(), StandardCharsets.UTF_8)));
+                        S124ExchangeSetFactoryTest::pemOf));
 
         String ref = catalogue.getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0)
                 .getDigitalSignatureValues().get(0).getS100SEDigitalSignature().getValue()
@@ -415,7 +460,7 @@ class S124ExchangeSetFactoryTest {
         List<S100SECertificateType> certificates = catalogue.getCertificates().get(0).getCertificates();
         Map<String, String> pemById = certificates.stream()
                 .collect(Collectors.toMap(S100SECertificateType::getId,
-                        c -> new String(c.getValue(), StandardCharsets.UTF_8)));
+                        S124ExchangeSetFactoryTest::pemOf));
 
         // The shared domain coordinator is carried once, not twice.
         assertThat(pemById.values().stream().filter(domainCoordinatorPem::equals)).hasSize(1);
@@ -433,6 +478,200 @@ class S124ExchangeSetFactoryTest {
                 .getCertificateRef();
         assertThat(pemById).containsKey(ref);
         assertThat(pemById.get(ref)).isEqualTo(dataServerPreviousPem);
+    }
+
+    /**
+     * S-100 Part 15, clause 15-8.8: "Chains of digital signatures are implemented by use of a
+     * signatureRef attribute", and clause 15-8.11.5 makes that attribute mandatory (Mult 1).
+     * A cancelled dataset's entry may carry such a counter-signature, so reproducing the entry
+     * must keep it an S100_SE_SignatureOnSignature with its signatureRef, and must leave its
+     * certificateRef pointing at the certificate of the party that made it - the counter-signer
+     * is by definition a different certified identity than the data signer. That certificate
+     * travels with the exchange set (clause 15-8.7) under an id of this catalogue's own, which
+     * is what the reproduced signature has to reference.
+     */
+    @Test
+    void reusedSignatureOnSignatureKeepsItsSubtypeAndReferences() throws Exception {
+        S124ExchangeSetFactory.Cancellation seed = cancellationOf(newDataset("DK.S124.countersigned"));
+        S100DatasetDiscoveryMetadata original = seed.original();
+        String dataSignatureId = original.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue().getId();
+        original.getDigitalSignatureValues().add(
+                counterSignature("s3", dataSignatureId, "cerCounterSigner"));
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(new S124ExchangeSetFactory.Cancellation(
+                        original, seed.issueDate(), List.of(),
+                        Map.of("cerCounterSigner", List.of(dataServerPreviousPem, domainCoordinatorPem)))))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        S100ExchangeCatalogue catalogue = catalogueOf(zipBytes);
+        S100DatasetDiscoveryMetadata emitted = catalogue
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+        assertThat(emitted.getPurpose()).isEqualTo(S100Purpose.CANCELLATION);
+        assertThat(emitted.getDigitalSignatureValues()).hasSize(2);
+
+        // The dataset signature still resolves to the certificate carried for the cancellation.
+        S100SEDigitalSignature onData = emitted.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue();
+        assertThat(onData).isInstanceOf(S100SESignatureOnData.class);
+        assertThat(onData.getCertificateRef()).isEqualTo("cer1");
+
+        // The chained signature keeps its subtype and its signatureRef ...
+        S100SEDigitalSignature chained = emitted.getDigitalSignatureValues().get(1)
+                .getS100SEDigitalSignature().getValue();
+        assertThat(chained).isInstanceOfSatisfying(S100SESignatureOnSignature.class, s -> {
+            assertThat(s.getId()).isEqualTo("s3");
+            assertThat(s.getSignatureRef()).isEqualTo(dataSignatureId);
+            assertThat(s.getValue()).isEqualTo("counter-signature".getBytes(StandardCharsets.UTF_8));
+        });
+
+        // ... and its certificateRef resolves, to the counter-signer's certificate rather than
+        // to the data signer's (clause 15-8.11.5: "Identifier of the certificate against which
+        // the digital signature validates").
+        Map<String, String> pemById = catalogue.getCertificates().get(0).getCertificates().stream()
+                .collect(Collectors.toMap(S100SECertificateType::getId,
+                        S124ExchangeSetFactoryTest::pemOf));
+        String counterSignerRef = ((S100SESignatureOnSignature) chained).getCertificateRef();
+        assertThat(pemById).containsKey(counterSignerRef);
+        assertThat(pemById.get(counterSignerRef)).isEqualTo(dataServerPreviousPem);
+        assertThat(counterSignerRef).isNotEqualTo(onData.getCertificateRef());
+
+        // Every issuer reference of the enlarged certificate container still resolves too.
+        String schemeAdministrator = catalogue.getCertificates().get(0).getSchemeAdministrator().getId();
+        assertThat(catalogue.getCertificates().get(0).getCertificates()).allSatisfy(c ->
+                assertThat(c.getIssuer())
+                        .as("issuer of certificate %s must resolve", c.getId())
+                        .isIn(union(pemById.keySet(), schemeAdministrator)));
+
+        // ... in the marshalled catalogue too, as the S100_SE_SignatureOnSignature element.
+        String catalogXml = new String(unzip(zipBytes).get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        assertThat(catalogXml)
+                .as("CATALOG.XML:%n%s", catalogXml)
+                .contains("S100_SE_SignatureOnSignature")
+                .contains("signatureRef=\"" + dataSignatureId + "\"");
+        assertThat(validateAgainstCatalogueSchema(catalogXml))
+                .as("XSD validation errors in CATALOG.XML:\n%s", catalogXml)
+                .isEmpty();
+
+        // Supplying the original must not modify it.
+        assertThat(original.getDigitalSignatureValues()).hasSize(2);
+        assertThat(original.getDigitalSignatureValues().get(1).getS100SEDigitalSignature().getValue())
+                .isInstanceOfSatisfying(S100SESignatureOnSignature.class, s ->
+                        assertThat(s.getCertificateRef()).isEqualTo("cerCounterSigner"));
+    }
+
+    /**
+     * The counter-signer's certificate cannot be conjured up: S-100 Part 15, clause 15-8.7,
+     * requires the exchange set to carry "all the certificates required to perform a full
+     * certificate path validation without any external access", so a chained signature whose
+     * certificate is not supplied is rejected rather than emitted with a certificateRef that
+     * resolves to nothing in the catalogue.
+     */
+    @Test
+    void reusedSignatureOnSignatureWithoutTheCounterSignersCertificateIsRejected() throws Exception {
+        S124ExchangeSetFactory.Cancellation seed = cancellationOf(newDataset("DK.S124.unknown-signer"));
+        S100DatasetDiscoveryMetadata original = seed.original();
+        String dataSignatureId = original.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue().getId();
+        original.getDigitalSignatureValues().add(
+                counterSignature("s3", dataSignatureId, "cerCounterSigner"));
+
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(new S124ExchangeSetFactory.Cancellation(original, seed.issueDate())))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("cerCounterSigner")
+                .hasMessageContaining("does not carry");
+    }
+
+    /**
+     * A chained signature without the signatureRef that clause 15-8.11.5 makes mandatory
+     * cannot be reproduced into a conformant cancellation entry, so it is rejected instead of
+     * being emitted with a severed chain.
+     */
+    @Test
+    void reusedSignatureOnSignatureWithoutSignatureRefIsRejected() throws Exception {
+        S124ExchangeSetFactory.Cancellation seed = cancellationOf(newDataset("DK.S124.no-signature-ref"));
+        S100DatasetDiscoveryMetadata original = seed.original();
+        original.getDigitalSignatureValues().add(counterSignature("s3", null, "cerCounterSigner"));
+
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(new S124ExchangeSetFactory.Cancellation(original, seed.issueDate())))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("signatureRef");
+    }
+
+    /**
+     * The certificate of the counter-signing party cannot be guessed either: silently pointing
+     * the chained signature at the data signer's certificate would break the verification of
+     * every signature in the chain (clause 15-8.8).
+     */
+    @Test
+    void reusedSignatureOnSignatureWithoutCertificateRefIsRejected() throws Exception {
+        S124ExchangeSetFactory.Cancellation seed = cancellationOf(newDataset("DK.S124.no-certificate-ref"));
+        S100DatasetDiscoveryMetadata original = seed.original();
+        String dataSignatureId = original.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue().getId();
+        original.getDigitalSignatureValues().add(counterSignature("s3", dataSignatureId, null));
+
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(new S124ExchangeSetFactory.Cancellation(original, seed.issueDate())))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("certificateRef");
+    }
+
+    /** A signature made by another party on the signature {@code signatureRef} (clause 15-8.8). */
+    private static S100DatasetDiscoveryMetadata.DigitalSignatureValue counterSignature(
+            String id, String signatureRef, String certificateRef) {
+        S100SESignatureOnSignature signature = new S100SESignatureOnSignature();
+        signature.setId(id);
+        signature.setSignatureRef(signatureRef);
+        signature.setCertificateRef(certificateRef);
+        signature.setValue("counter-signature".getBytes(StandardCharsets.UTF_8));
+        S100DatasetDiscoveryMetadata.DigitalSignatureValue value =
+                new S100DatasetDiscoveryMetadata.DigitalSignatureValue();
+        value.setS100SEDigitalSignature(new dk.dma.niord.s100.catalog._5_2.ObjectFactory()
+                .createS100SESignatureOnSignature(signature));
+        return value;
+    }
+
+    /**
+     * The PEM body of a carried certificate: the element is typed xs:base64Binary, so its
+     * unmarshalled value is the certificate DER content and Base64 encoding it once - exactly
+     * what S-100 Part 15, clause 15-8.6, puts on the wire - reproduces the PEM text.
+     */
+    private static String pemOf(S100SECertificateType certificate) {
+        return Base64.getEncoder().encodeToString(certificate.getValue());
     }
 
     private static List<String> union(java.util.Set<String> ids, String extra) {
@@ -497,6 +736,10 @@ class S124ExchangeSetFactoryTest {
         assertThat(original.getPurpose()).isEqualTo(S100Purpose.NEW_DATASET);
     }
 
+    /**
+     * The dataset entries must follow the fixed values of the S-124 clause 12.2.2 discovery
+     * metadata profile and the algorithm/codelist restrictions of S-100 Parts 15 and 17.
+     */
     @Test
     void datasetEntriesFollowTheS124MetadataProfile() throws Exception {
         LocalDateTime beforeBuild = LocalDateTime.now(ZoneOffset.UTC).minusMinutes(1);
@@ -518,17 +761,13 @@ class S124ExchangeSetFactoryTest {
                 .doesNotContain("navigationPurpose")
                 // S-124 clause 12.2.2 fixes specificUsage
                 .contains("Navigational Warning Service")
-                // MD_MaintenanceInformation needs a maintenance date alongside the frequency,
-                // so resourceMaintenance is omitted (0..1) unless a date is configured
-                .doesNotContain("maintenanceAndUpdateFrequency")
-                .doesNotContain("continual")
                 // Part 15 clause 15-8.7 mandates the ECDSA-384-SHA2 encoding
                 .contains("ECDSA-384-SHA2")
                 .doesNotContain("ECDSA-384-SHA3")
                 // Part 15 clause 15-8.11.4: signatures on data carry dataStatus
                 .contains("unencrypted")
-                // Part 17 S100_DataCoverage NOTE 1 fixes the bounding polygon SRS
-                .contains("srsName=\"EPSG:4326\"");
+                // S-124 clause 12.2.2 makes the bounding box mandatory
+                .contains("westBoundLongitude");
 
         S100ExchangeCatalogue catalogue = S100ExchangeSetUtils.unmarshallS100ExchangeSetCatalogue(catalogXml);
         S100ProductSpecification productSpecification = catalogue.getProductSpecifications().get(0);
@@ -548,6 +787,292 @@ class S124ExchangeSetFactoryTest {
                 .getS100DatasetDiscoveryMetadatas().get(0);
         assertThat(meta.getDigitalSignatureReference().getValue())
                 .isEqualTo(S100SEDigitalSignatureReference.ECDSA_384_SHA_2);
+    }
+
+    /**
+     * S-124 clause 12.1: "the S100_DatasetDiscoveryMetadata is further restricted to remove
+     * attributes that are not relevant to a Navigational Warning service." Neither the clause
+     * 12.2.2 encoding table nor the metadata model figure carries editionNumber, updateNumber,
+     * dataCoverage, replacedData or resourceMaintenance, so no S-124 dataset entry may.
+     */
+    @Test
+    void datasetEntriesOmitTheAttributesTheS124ProfileRemoves() throws Exception {
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.profile-removals")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        S100DatasetDiscoveryMetadata meta = catalogueOf(zipBytes)
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+
+        assertThat(meta.getEditionNumber()).isNull();
+        assertThat(meta.getUpdateNumber()).isNull();
+        assertThat(meta.getDataCoverages()).isEmpty();
+        assertThat(meta.isReplacedData()).isNull();
+        assertThat(meta.getResourceMaintenance()).isNull();
+
+        String entryXml = marshal(meta);
+        assertThat(entryXml)
+                .as("dataset entry:%n%s", entryXml)
+                .doesNotContain("editionNumber")
+                .doesNotContain("updateNumber")
+                .doesNotContain("dataCoverage")
+                .doesNotContain("replacedData")
+                .doesNotContain("resourceMaintenance")
+                .doesNotContain("maintenanceAndUpdateFrequency");
+    }
+
+    /**
+     * S-124 clause 12.2.2 makes the bounding box mandatory: "boundingBox | The extent of the
+     * dataset limits | 1 | EX_GeographicBoundingBox". The dataset's own gml:boundedBy is used
+     * when it declares one.
+     */
+    @Test
+    void boundingBoxComesFromTheDatasetEnvelopeWhenItDeclaresOne() throws Exception {
+        Dataset dataset = newDataset("DK.S124.declared-extent");
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        assertBoundingBox(catalogueOf(zipBytes), 8.0, 14.0, 54.0, 58.0);
+    }
+
+    /**
+     * gml:boundedBy is optional in the S-100 GML profile, but S-124 clause 12.2.2 makes the
+     * discovery metadata's boundingBox mandatory all the same, so the extent of a dataset that
+     * declares no envelope is derived from the geometry its members carry - the union of it,
+     * not the geometry of a single member.
+     */
+    @Test
+    void boundingBoxIsDerivedFromMemberGeometryWhenTheDatasetDeclaresNoEnvelope() throws Exception {
+        GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        Dataset dataset = newDataset("DK.S124.derived-extent");
+        dataset.setBoundedBy(null);
+        addMemberGeometry(dataset, geometryFactory.createPoint(new Coordinate(8.0, 54.0)));
+        addMemberGeometry(dataset, geometryFactory.createLineString(new Coordinate[] {
+                new Coordinate(11.0, 56.0), new Coordinate(14.0, 58.0) }));
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        assertBoundingBox(catalogueOf(zipBytes), 8.0, 14.0, 54.0, 58.0);
+    }
+
+    /**
+     * The most common NAVWARN extent is a single position, and the S-100 Part 17 catalogue
+     * Schematron (S100_XC.sch, pattern S100_ValidBBoxPattern) asserts at error level that
+     * "northBoundLatitude ... must be greater than southBoundLatitude" - and warns unless west
+     * is less than east - so the point extent is padded to a strictly positive span that still
+     * contains the position.
+     */
+    @Test
+    void boundingBoxOfAPointDatasetIsPaddedToAStrictlyPositiveSpan() throws Exception {
+        GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        Dataset dataset = newDataset("DK.S124.point-extent");
+        dataset.setBoundedBy(null);
+        addMemberGeometry(dataset, geometryFactory.createPoint(new Coordinate(12.5, 55.5)));
+
+        assertPaddedAround(emittedBoundingBox(exchangeSetOf(dataset)), 12.5, 55.5);
+    }
+
+    /**
+     * The same holds for an extent that is degenerate in one dimension only, such as the curve
+     * of constant latitude a coastal warning is often drawn as: the latitude span is padded,
+     * the longitude span is left as it is.
+     */
+    @Test
+    void boundingBoxOfAConstantLatitudeCurveIsPaddedInLatitudeOnly() throws Exception {
+        GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        Dataset dataset = newDataset("DK.S124.flat-extent");
+        dataset.setBoundedBy(null);
+        addMemberGeometry(dataset, geometryFactory.createLineString(new Coordinate[] {
+                new Coordinate(8.0, 55.5), new Coordinate(14.0, 55.5) }));
+
+        S100GeographicBoundingBoxType box = emittedBoundingBox(exchangeSetOf(dataset));
+        assertThat(box.getWestBoundLongitude().getDecimal()).isEqualByComparingTo(BigDecimal.valueOf(8.0));
+        assertThat(box.getEastBoundLongitude().getDecimal()).isEqualByComparingTo(BigDecimal.valueOf(14.0));
+        assertThat(box.getSouthBoundLatitude().getDecimal().doubleValue())
+                .isLessThan(55.5)
+                .isCloseTo(55.5, within(0.0001));
+        assertThat(box.getNorthBoundLatitude().getDecimal().doubleValue())
+                .isGreaterThan(55.5)
+                .isCloseTo(55.5, within(0.0001));
+    }
+
+    /**
+     * A dataset that declares a degenerate {@code gml:boundedBy} - a "point envelope" - is
+     * padded just the same: the catalogue cannot encode a bounding box of zero height either
+     * way.
+     */
+    @Test
+    void boundingBoxOfADegenerateDeclaredEnvelopeIsPadded() throws Exception {
+        Dataset dataset = newDataset("DK.S124.point-envelope");
+        // GML positions use lat,lon order.
+        PosImpl corner = new PosImpl();
+        corner.setValue(new Double[] { 55.5, 12.5 });
+        dataset.getBoundedBy().getEnvelope().setLowerCorner(corner);
+        dataset.getBoundedBy().getEnvelope().setUpperCorner(corner);
+
+        assertPaddedAround(emittedBoundingBox(exchangeSetOf(dataset)), 12.5, 55.5);
+    }
+
+    /**
+     * The padding stays inside the coordinate domain the same Schematron pattern asserts
+     * ("latitude and longitude in decimal degrees in +/-90 or +/-180 range"): a position on a
+     * pole or on the antimeridian is padded inwards instead of past the limit.
+     */
+    @Test
+    void boundingBoxPaddingStaysWithinTheCoordinateDomain() throws Exception {
+        GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), 4326);
+        Dataset dataset = newDataset("DK.S124.pole-extent");
+        dataset.setBoundedBy(null);
+        addMemberGeometry(dataset, geometryFactory.createPoint(new Coordinate(180.0, 90.0)));
+
+        S100GeographicBoundingBoxType box = emittedBoundingBox(exchangeSetOf(dataset));
+        assertThat(box.getEastBoundLongitude().getDecimal().doubleValue()).isEqualTo(180.0);
+        assertThat(box.getNorthBoundLatitude().getDecimal().doubleValue()).isEqualTo(90.0);
+        assertThat(box.getWestBoundLongitude().getDecimal().doubleValue())
+                .isCloseTo(179.9999, within(1e-9));
+        assertThat(box.getSouthBoundLatitude().getDecimal().doubleValue())
+                .isCloseTo(89.9999, within(1e-9));
+    }
+
+    /** Asserts a padded bounding box: strictly ordered, tight, and containing the position. */
+    private static void assertPaddedAround(S100GeographicBoundingBoxType box,
+            double longitude, double latitude) {
+        double west = box.getWestBoundLongitude().getDecimal().doubleValue();
+        double east = box.getEastBoundLongitude().getDecimal().doubleValue();
+        double south = box.getSouthBoundLatitude().getDecimal().doubleValue();
+        double north = box.getNorthBoundLatitude().getDecimal().doubleValue();
+        assertThat(west).as("westBoundLongitude < eastBoundLongitude").isLessThan(east);
+        assertThat(south).as("southBoundLatitude < northBoundLatitude").isLessThan(north);
+        assertThat(longitude).as("the box contains the position").isBetween(west, east);
+        assertThat(latitude).as("the box contains the position").isBetween(south, north);
+        assertThat(east - west).isCloseTo(0.0001, within(1e-9));
+        assertThat(north - south).isCloseTo(0.0001, within(1e-9));
+    }
+
+    /** The bounding box of the first dataset entry of the exchange set's catalogue. */
+    private static S100GeographicBoundingBoxType emittedBoundingBox(byte[] zipBytes) throws Exception {
+        return catalogueOf(zipBytes).getDatasetDiscoveryMetadata()
+                .getS100DatasetDiscoveryMetadatas().get(0).getBoundingBox();
+    }
+
+    /** A minimal exchange set carrying the given dataset. */
+    private static byte[] exchangeSetOf(Dataset dataset) {
+        return S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+    }
+
+    /**
+     * A dataset with neither an envelope nor any member geometry has no extent to describe, so
+     * it is rejected rather than packaged behind a catalogue entry that lacks the element S-124
+     * clause 12.2.2 makes mandatory.
+     */
+    @Test
+    void rejectsDatasetsWithNeitherAnEnvelopeNorMemberGeometry() {
+        Dataset dataset = newDataset("DK.S124.no-extent");
+        dataset.setBoundedBy(null);
+
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining(datasetFileNameOf("DK.S124.no-extent"))
+                .hasMessageContaining("boundingBox");
+    }
+
+    /**
+     * S-124 clause 9.3 cancels a dataset by "Populating the cancellationDate attribute in the
+     * dataset and the temporalExtent in the metadata (see 12.2.2), and that date has passed",
+     * and clause 12.2.2 requires the metadata values to "align with the publicationTime and
+     * cancellationDate attributes of the dataset NavwarnPreamble".
+     */
+    @Test
+    void temporalExtentReproducesThePreambleOfASelfCancellingDataset() throws Exception {
+        Dataset dataset = newDataset("DK.S124.self-cancelling");
+        addPreamble(dataset,
+                OffsetDateTime.parse("2026-01-15T06:00:00Z"),
+                // a non-UTC offset, which the catalogue must carry as the same instant in UTC
+                OffsetDateTime.parse("2026-01-20T18:00:00+02:00"));
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        S100TemporalExtent temporalExtent = catalogueOf(zipBytes)
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0)
+                .getTemporalExtent();
+
+        assertThat(temporalExtent).isNotNull();
+        assertThat(temporalExtent.getTimeInstantBegin())
+                .isEqualTo(LocalDateTime.of(2026, 1, 15, 6, 0, 0));
+        assertThat(temporalExtent.getTimeInstantEnd())
+                .isEqualTo(LocalDateTime.of(2026, 1, 20, 16, 0, 0));
+    }
+
+    /**
+     * S-124 clause 12.2.2: the temporal extent "is only used when a NAVWARN have a known expiry
+     * date and time", so a warning whose preamble carries no cancellation date - and a dataset
+     * with no preamble at all - must ship without one.
+     */
+    @Test
+    void noTemporalExtentWithoutAKnownExpiry() throws Exception {
+        Dataset withoutCancellation = newDataset("DK.S124.in-force");
+        addPreamble(withoutCancellation, OffsetDateTime.parse("2026-01-15T06:00:00Z"), null);
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(withoutCancellation, newDataset("DK.S124.no-preamble")))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        assertThat(catalogueOf(zipBytes).getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas())
+                .hasSize(2)
+                .allSatisfy(meta -> assertThat(meta.getTemporalExtent()).isNull());
     }
 
     /** S-124 clause 9.6: "S-124 datasets must not exceed 50KB." */
@@ -705,16 +1230,6 @@ class S124ExchangeSetFactoryTest {
                 .hasMessageContaining("ECDSA-384-SHA2");
         assertThat(builder.signatureAlgorithm(S100SEDigitalSignatureReference.ECDSA_384_SHA_2))
                 .isSameAs(builder);
-    }
-
-    @Test
-    void rejectsMaintenanceFrequenciesOutsideTheS100Subset() {
-        S124ExchangeSetFactory.Builder builder = S124ExchangeSetFactory.builder();
-
-        assertThatThrownBy(() -> builder.maintenanceFrequency(MaintenanceFrequency.CONTINUAL))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("asNeeded");
-        assertThat(builder.maintenanceFrequency(MaintenanceFrequency.IRREGULAR)).isSameAs(builder);
     }
 
     @Test
@@ -1074,6 +1589,63 @@ class S124ExchangeSetFactoryTest {
 
     private static Geometry boundingBoxOf(Dataset dataset) {
         return GeometryS124Converter.envelopeToJts(dataset.getBoundedBy());
+    }
+
+    /** Asserts the extent of the catalogue's first dataset entry, in degrees. */
+    private static void assertBoundingBox(S100ExchangeCatalogue catalogue,
+            double west, double east, double south, double north) {
+        S100GeographicBoundingBoxType boundingBox = catalogue.getDatasetDiscoveryMetadata()
+                .getS100DatasetDiscoveryMetadatas().get(0).getBoundingBox();
+        assertThat(boundingBox)
+                .as("boundingBox has multiplicity 1 in S-124 clause 12.2.2")
+                .isNotNull();
+        assertThat(boundingBox.getWestBoundLongitude().getDecimal())
+                .isEqualByComparingTo(BigDecimal.valueOf(west));
+        assertThat(boundingBox.getEastBoundLongitude().getDecimal())
+                .isEqualByComparingTo(BigDecimal.valueOf(east));
+        assertThat(boundingBox.getSouthBoundLatitude().getDecimal())
+                .isEqualByComparingTo(BigDecimal.valueOf(south));
+        assertThat(boundingBox.getNorthBoundLatitude().getDecimal())
+                .isEqualByComparingTo(BigDecimal.valueOf(north));
+    }
+
+    /** Adds a NavwarnPart carrying {@code geometry} to the dataset's members. */
+    private static void addMemberGeometry(Dataset dataset, Geometry geometry) {
+        ObjectFactory of = new ObjectFactory();
+        List<AbstractGMLType> members = membersOf(dataset)
+                .getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements();
+        NavwarnPart part = of.createNavwarnPart();
+        part.setId("NW." + (members.size() + 1));
+        for (S100SpatialAttributeType property :
+                GeometryS124Converter.geometryToS124PointCurveSurfaceGeometry(geometry)) {
+            NavwarnPart.Geometry memberGeometry = of.createNavwarnPartGeometry();
+            if (property instanceof PointProperty pointProperty) {
+                memberGeometry.setPointProperty(pointProperty);
+            } else if (property instanceof CurveProperty curveProperty) {
+                memberGeometry.setCurveProperty(curveProperty);
+            } else {
+                memberGeometry.setSurfaceProperty((SurfaceProperty) property);
+            }
+            part.getGeometries().add(memberGeometry);
+        }
+        members.add(part);
+    }
+
+    /** Adds the NavwarnPreamble S-124 clause 12.2.2 aligns the temporal extent with. */
+    private static void addPreamble(Dataset dataset, OffsetDateTime publicationTime,
+            OffsetDateTime cancellationDate) {
+        NavwarnPreamble preamble = new ObjectFactory().createNavwarnPreamble();
+        preamble.setId("PR.1");
+        preamble.setPublicationTime(publicationTime);
+        preamble.setCancellationDate(cancellationDate);
+        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().add(preamble);
+    }
+
+    private static Dataset.Members membersOf(Dataset dataset) {
+        if (dataset.getMembers() == null) {
+            dataset.setMembers(new ObjectFactory().createDatasetMembers());
+        }
+        return dataset.getMembers();
     }
 
     private static StandaloneDigitalSignature unmarshalSignature(String xml) throws Exception {

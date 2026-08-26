@@ -448,7 +448,11 @@ public class S100ExchangeCatalogueBuilder {
                 // (S-100 Part 15 clause 15-8.6)
                 certificateType.setIssuer(this.certificateIssuers.getOrDefault(
                         certificateEntry.getKey(), this.schemeAdministrator));
-                certificateType.setValue(S100ExchangeSetUtils.getPemFromCert(certificateEntry.getValue()));
+                // The certificate element is typed xs:base64Binary and is therefore
+                // Base64-encoded by JAXB itself, so it is given the certificate DER
+                // content: S-100 Part 15, clauses 15-8.6 and 15-8.11.1, require a
+                // single Base64 decode of the element to yield the X.509 certificate
+                certificateType.setValue(S100ExchangeSetUtils.getDerFromCert(certificateEntry.getValue()));
                 s100SECertificateContainerType.getCertificates().add(certificateType);
             }
             exchangeCatalogue.getCertificates().add(s100SECertificateContainerType);

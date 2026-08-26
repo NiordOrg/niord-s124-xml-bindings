@@ -2,11 +2,13 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DatasetPurposeType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.DataSetIdentificationTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.BoundingShapeTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.EnvelopeTypeImpl;
@@ -37,6 +39,44 @@ class S124DatasetInfoTest {
         info.setFileIdentifier("124DK00XYZ.GML");
 
         assertThat(info.getFileIdentifier()).isEqualTo("124DK00XYZ.GML");
+    }
+
+    /**
+     * S-100 Part 10b Table 10b-4 admits two values for applicationProfile: "1" for base
+     * datasets and "2" for update datasets. The XSD types the element as a plain string,
+     * so nothing but this carrier keeps the value inside the standard.
+     */
+    @Test
+    void defaultApplicationProfileIsTheBaseDatasetCode() {
+        S124DatasetInfo info = new S124DatasetInfo("NW-001", "DK00");
+
+        assertThat(info.getPurpose()).isEqualTo(DatasetPurposeType.BASE);
+        assertThat(info.getApplicationProfile()).isEqualTo("1");
+    }
+
+    /** The profile follows the purpose: an update dataset is application profile "2". */
+    @Test
+    void applicationProfileFollowsTheDatasetPurpose() {
+        S124DatasetInfo info = new S124DatasetInfo("NW-001", "DK00");
+
+        info.setPurpose(DatasetPurposeType.UPDATE);
+        assertThat(info.getApplicationProfile()).isEqualTo("2");
+
+        info.setPurpose(DatasetPurposeType.BASE);
+        assertThat(info.getApplicationProfile()).isEqualTo("1");
+    }
+
+    @Test
+    void rejectsApplicationProfilesOutsideTable10b4() {
+        S124DatasetInfo info = new S124DatasetInfo("NW-001", "DK00");
+
+        assertThatThrownBy(() -> info.setApplicationProfile("NavigationalWarning"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("applicationProfile");
+        assertThat(info.getApplicationProfile()).isEqualTo("1");
+
+        info.setApplicationProfile(S124DatasetInfo.UPDATE_APPLICATION_PROFILE);
+        assertThat(info.getApplicationProfile()).isEqualTo("2");
     }
 
     /**

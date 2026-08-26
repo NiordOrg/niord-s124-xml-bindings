@@ -41,6 +41,7 @@ import dk.dma.niord.s100.catalog._5_2.S100CompliancyCategory;
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
 import org.grad.eNav.s100.enums.SecurityClassification;
+import dk.dma.niord.s100.catalog._5_2.S100ProductSpecification;
 import dk.dma.niord.s100.catalog._5_2.S100Purpose;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
 import dk.dma.niord.s100.catalog._5_2.S100SEDigitalSignatureReference;
@@ -113,7 +114,7 @@ class S124ExchangeSetFactoryTest {
 
         assertThat(entries.keySet())
                 .contains("S100_ROOT/CATALOG.XML", "S100_ROOT/CATALOG.SIGN")
-                .anyMatch(name -> name.startsWith("S100_ROOT/S-124/DATASET_FILES/124DK00") && name.endsWith("-0.GML"));
+                .contains("S100_ROOT/S-124/DATASET_FILES/" + datasetFileNameOf("DK.S124.test-1"));
         assertThat(entries.keySet())
                 .contains("S100_ROOT/S-124/CATALOGUES/", "S100_ROOT/S-124/SUPPORT_FILES/");
 
@@ -525,11 +526,20 @@ class S124ExchangeSetFactoryTest {
                 .contains("ECDSA-384-SHA2")
                 .doesNotContain("ECDSA-384-SHA3")
                 // Part 15 clause 15-8.11.4: signatures on data carry dataStatus
-                .contains("unencrypted");
+                .contains("unencrypted")
+                // Part 17 S100_DataCoverage NOTE 1 fixes the bounding polygon SRS
+                .contains("srsName=\"EPSG:4326\"");
 
         S100ExchangeCatalogue catalogue = S100ExchangeSetUtils.unmarshallS100ExchangeSetCatalogue(catalogXml);
-        assertThat(catalogue.getProductSpecifications().get(0).getCompliancyCategory())
-                .isEqualTo(S100CompliancyCategory.CATEGORY_3);
+        S100ProductSpecification productSpecification = catalogue.getProductSpecifications().get(0);
+        assertThat(productSpecification.getCompliancyCategory()).isEqualTo(S100CompliancyCategory.CATEGORY_3);
+        // S-124 clause 12.2.2.4 fixes the name and the product identifier, and defines the date
+        // as the publication date of the product specification (March 2025 for Edition 2.0.0)
+        assertThat(productSpecification.getName()).isEqualTo("Navigational Warnings");
+        assertThat(productSpecification.getProductIdentifier()).isEqualTo("S-124");
+        assertThat(productSpecification.getNumber()).isEqualTo(BigInteger.valueOf(124));
+        assertThat(productSpecification.getVersion()).isEqualTo("2.0.0");
+        assertThat(productSpecification.getDate()).isEqualTo(LocalDate.of(2025, 3, 1));
         // Part 17 mandates the catalogue creation date and time in UTC
         assertThat(catalogue.getIdentifier().getDateTime())
                 .isBetween(beforeBuild, LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1));
@@ -557,8 +567,137 @@ class S124ExchangeSetFactoryTest {
 
         assertThatThrownBy(factory::toBytes)
                 .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
-                .hasMessageContaining("124DK00DK.S124.oversized-0.GML")
+                .hasMessageContaining(datasetFileNameOf("DK.S124.oversized"))
                 .hasMessageContaining("51200");
+    }
+
+    /**
+     * S-100 Part 17, clause 17-4.3 (mandated for S-124 by clause 9.7), names dataset files
+     * 124&lt;producer code&gt;&lt;unique code&gt;.GML, the unique code being "an arbitrary length
+     * unique code in alphanumeric characters"; S-100 Part 10b Table 10b-4 makes the dataset's
+     * own datasetFileIdentifier that very name. The gml:id's dots and hyphens therefore reach
+     * neither the packaged file name nor the catalogue entry.
+     */
+    @Test
+    void packagesDatasetsUnderTheirDeclaredPart17FileName() throws Exception {
+        Dataset dataset = newDataset("DK.S124.naming-1");
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        String fileName = "124DK00DKS124naming1.GML";
+        assertThat(dataset.getDatasetIdentificationInformation().getDatasetFileIdentifier())
+                .isEqualTo(fileName);
+        assertThat(unzip(zipBytes)).containsKey("S100_ROOT/S-124/DATASET_FILES/" + fileName);
+        assertThat(catalogueOf(zipBytes).getDatasetDiscoveryMetadata()
+                .getS100DatasetDiscoveryMetadatas().get(0).getFileName())
+                .isEqualTo("file:/" + fileName);
+    }
+
+    /**
+     * Without a datasetFileIdentifier there is nothing to keep the file name consistent with,
+     * so it is derived from the dataset identifier - reduced to the alphanumeric unique code
+     * clause 17-4.3 allows.
+     */
+    @Test
+    void derivesAlphanumericFileNamesForDatasetsWithoutAFileIdentifier() throws Exception {
+        Dataset dataset = newDataset("DK.S124.no-identifier");
+        dataset.getDatasetIdentificationInformation().setDatasetFileIdentifier(null);
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        assertThat(unzip(zipBytes)).containsKey("S100_ROOT/S-124/DATASET_FILES/124DK00DKS124noidentifier.GML");
+    }
+
+    /**
+     * A declared file identifier that is not a clause 17-4.3 file name cannot be repaired by
+     * renaming the packaged file: the identifier travels inside the dataset. It is rejected.
+     */
+    @Test
+    void rejectsDatasetFileIdentifiersThatAreNotPart17FileNames() {
+        Dataset dataset = newDataset("DK.S124.bad-name");
+        dataset.getDatasetIdentificationInformation().setDatasetFileIdentifier("DK.S124.bad-name");
+
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("DK.S124.bad-name")
+                .hasMessageContaining("124DK00");
+    }
+
+    /**
+     * S-100 Part 17, clause 17-4.3: "all base dataset filenames must be unique", which is what
+     * makes the file URIs of the catalogue resolvable. Datasets that would collide are rejected
+     * rather than silently packaged over one another.
+     */
+    @Test
+    void rejectsDatasetsThatWouldShareAFileName() {
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.twin"), newDataset("DK.S124.twin")))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("124DK00DKS124twin.GML")
+                .hasMessageContaining("unique");
+    }
+
+    /** The producer code is part of every dataset file name, so it must be alphanumeric too. */
+    @Test
+    void rejectsProducerCodesThatAreNotAlphanumeric() {
+        S124ExchangeSetFactory.Builder builder = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.producer-code")))
+                .organization("DMA")
+                .producerCode("DK-00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64]);
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("producerCode");
+    }
+
+    /**
+     * S-100 Part 15, clause 15-8.7: "The digitalSignatureReference field must be encoded
+     * 'ECDSA-384-SHA2'." No other algorithm may be configured.
+     */
+    @Test
+    void rejectsSignatureAlgorithmsOtherThanTheFixedValue() {
+        S124ExchangeSetFactory.Builder builder = S124ExchangeSetFactory.builder();
+
+        assertThatThrownBy(() -> builder.signatureAlgorithm(S100SEDigitalSignatureReference.DSA))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ECDSA-384-SHA2");
+        assertThat(builder.signatureAlgorithm(S100SEDigitalSignatureReference.ECDSA_384_SHA_2))
+                .isSameAs(builder);
     }
 
     @Test
@@ -949,6 +1088,11 @@ class S124ExchangeSetFactoryTest {
                 .count();
     }
 
+    /** The clause 17-4.3 file name the test producer DK00 packages the dataset {@code id} under. */
+    private static String datasetFileNameOf(String id) {
+        return "124DK00" + id.replaceAll("[^A-Za-z0-9]", "") + ".GML";
+    }
+
     private static Dataset newDataset(String id) {
         ObjectFactory of = new ObjectFactory();
         Dataset dataset = of.createDataset();
@@ -959,7 +1103,10 @@ class S124ExchangeSetFactoryTest {
         ident.setEncodingSpecificationEdition("1.0");
         ident.setProductIdentifier("S-124");
         ident.setProductEdition("2.0.0");
-        ident.setDatasetFileIdentifier(id);
+        // S-100 Part 10b Table 10b-4 defines the dataset file identifier as the name of the
+        // packaged file, which S-100 Part 17, clause 17-4.3, builds from the product code,
+        // the producer code and an alphanumeric unique code.
+        ident.setDatasetFileIdentifier(datasetFileNameOf(id));
         ident.setDatasetTitle("Test S-124 Dataset");
         ident.setDatasetReferenceDate(LocalDate.of(2026, 1, 15));
         ident.setDatasetLanguage("eng");

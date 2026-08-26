@@ -141,7 +141,7 @@
             <ns16:dataCoverage>
                 <ns16:boundingPolygon>
                     <ns3:polygon>
-                        <ns10:Polygon srsDimension="2" ns10:id="BP.1">
+                        <ns10:Polygon srsName="EPSG:4326" srsDimension="2" ns10:id="BP.1">
                             <ns10:exterior>
 <ns10:LinearRing>
     <ns10:posList>-10.0000000 -10.0000000 10.0000000 -11.0000000 11.0000000 10.0000000 -11.0000000 11.0000000 -10.0000000 -10.0000000</ns10:posList>

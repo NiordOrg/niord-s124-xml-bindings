@@ -42,6 +42,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -687,7 +688,7 @@ class S100ExchangeSetUtilsTest {
         final String inString = new String(in.readAllBytes(), StandardCharsets.UTF_8)
                 .replaceAll("-----BEGIN CERTIFICATE-----","")
                 .replaceAll("-----END CERTIFICATE-----","")
-                .replaceAll(System.lineSeparator(),"");
+                .replaceAll("\\s","");
 
         // Perform the translations
         X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(inString);
@@ -696,5 +697,39 @@ class S100ExchangeSetUtilsTest {
         // Make sure the translation operations worked correctly
         assertNotNull(certificate);
         assertNotNull(pem);
+        // The PEM representation is the textual one, i.e. the ASCII characters
+        // of the certificate Base64 encoded once, without the header and footer
+        // lines
+        assertEquals(inString, new String(pem, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Test that the DER translation returns the certificate content that the
+     * xs:base64Binary-typed certificate elements of the S-100 protection scheme
+     * expect - S-100 Part 15, clauses 15-8.6 and 15-8.11.1 require a single
+     * Base64 decode of such an element to yield the X.509 certificate, so the
+     * value handed to JAXB must not already be Base64 text.
+     *
+     * @throws IOException for IO Exceptions
+     * @throws CertificateException for issues with the certificate loading
+     */
+    @Test
+    void testCertDerOperations() throws IOException, CertificateException {
+        final InputStream in = ClassLoader.getSystemResourceAsStream("test.pem");
+        assertNotNull(in);
+        final String inString = new String(in.readAllBytes(), StandardCharsets.UTF_8)
+                .replaceAll("-----BEGIN CERTIFICATE-----","")
+                .replaceAll("-----END CERTIFICATE-----","")
+                .replaceAll("\\s","");
+        final X509Certificate certificate = S100ExchangeSetUtils.getCertFromPem(inString);
+
+        // Perform the translation
+        final byte[] der = S100ExchangeSetUtils.getDerFromCert(certificate);
+
+        // The DER content is the certificate encoding, i.e. Base64 encoding it
+        // once produces the PEM body and nothing more
+        assertNotNull(der);
+        assertArrayEquals(certificate.getEncoded(), der);
+        assertEquals(inString, Base64.getEncoder().encodeToString(der));
     }
 }

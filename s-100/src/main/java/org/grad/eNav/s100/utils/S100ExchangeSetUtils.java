@@ -353,21 +353,51 @@ public class S100ExchangeSetUtils {
 
     /**
      * This helper function will read the provided certificate and will generate
-     * a minified version of its PEM representation as a string.
+     * a minified version of its PEM representation, i.e. the ASCII characters of
+     * the Base64 encoded certificate DER content, without the PEM header and
+     * footer lines. Turned into a string it is the exact inverse of
+     * {@link #getCertFromPem(String)}.
+     * <p/>
+     * Note that this is the <b>textual</b> PEM representation. The certificate
+     * and signature elements of the S-100 protection scheme are typed
+     * xs:base64Binary, which JAXB Base64-encodes on its own, so those elements
+     * must be handed the DER content of {@link #getDerFromCert(X509Certificate)}
+     * instead - passing them the PEM text would encode the certificate twice.
      *
      * @param cert the X.509 certificate to be read
      * @return the minified PEM representation of the certificate
-     * @throws CertificateEncodingException if the provided PEM file is invalid
+     * @throws CertificateEncodingException if the provided certificate is invalid
      */
     public static byte[] getPemFromCert(X509Certificate cert) throws CertificateEncodingException {
         return Base64.getEncoder().encode(cert.getEncoded());
     }
 
     /**
+     * This helper function will read the provided certificate and will return
+     * its DER content, for embedding into the xs:base64Binary-typed certificate
+     * elements of the S-100 protection scheme.
+     * <p/>
+     * S-100 Part 15, clauses 15-8.6 and 15-8.11.1, require such an element to
+     * carry the Base64 encoded X.509 certificate - "When embedding the digital
+     * certificates in XML elements, the header and footer lines are omitted" -
+     * so a single Base64 decode of the element content has to yield the
+     * certificate itself. Since JAXB performs that Base64 encoding for the
+     * xs:base64Binary value, the value it is given must be the raw DER content.
+     *
+     * @param cert the X.509 certificate to be read
+     * @return the DER content of the certificate
+     * @throws CertificateEncodingException if the provided certificate is invalid
+     */
+    public static byte[] getDerFromCert(X509Certificate cert) throws CertificateEncodingException {
+        return cert.getEncoded();
+    }
+
+    /**
      * This helper function will read the provided PEM input and reconstruct the
      * valid X509 certificate.
      *
-     * @param certificatePem the certificate PEM input
+     * @param certificatePem the certificate PEM input, i.e. the Base64 encoded
+     *                       certificate without the PEM header and footer lines
      * @return the valid X509 certificate
      * @throws CertificateException if the provided PEM file is invalid
      */

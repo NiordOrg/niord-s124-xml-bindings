@@ -19,8 +19,10 @@ package org.grad.eNav.s100.adapters;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class DateAdapterTest {
 
@@ -53,6 +55,54 @@ class DateAdapterTest {
     @Test
     void testUnmarshalAcceptsLegacyBasicForm() {
         assertEquals(LocalDate.of(2026, 1, 15), this.dateAdapter.unmarshal("20260115"));
+    }
+
+    /**
+     * Test that the xs:gYearMonth member type of the gco:Date_Type union is
+     * unmarshalled, widened to the first day of the month, with and without
+     * the optional zone designator.
+     */
+    @Test
+    void testUnmarshalAcceptsGYearMonth() {
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-01"));
+        assertEquals(LocalDate.of(2026, 12, 1), this.dateAdapter.unmarshal("2026-12"));
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-01Z"));
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-01+02:00"));
+    }
+
+    /**
+     * Test that the xs:gYear member type of the gco:Date_Type union is
+     * unmarshalled, widened to the first day of the year, with and without
+     * the optional zone designator.
+     */
+    @Test
+    void testUnmarshalAcceptsGYear() {
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026"));
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026Z"));
+        assertEquals(LocalDate.of(2026, 1, 1), this.dateAdapter.unmarshal("2026-05:00"));
+    }
+
+    /**
+     * Test that the values widened from the truncated union member types
+     * round-trip through the xs:date form they are marshalled into.
+     */
+    @Test
+    void testMarshalUnmarshalRoundTrip() {
+        assertEquals("2026-01-01", this.dateAdapter.marshal(this.dateAdapter.unmarshal("2026-01")));
+        assertEquals("2026-01-01", this.dateAdapter.marshal(this.dateAdapter.unmarshal("2026")));
+        assertEquals(LocalDate.of(2026, 1, 15),
+                this.dateAdapter.unmarshal(this.dateAdapter.marshal(LocalDate.of(2026, 1, 15))));
+    }
+
+    /**
+     * Test that a value belonging to none of the gco:Date_Type union member
+     * lexical spaces is still rejected.
+     */
+    @Test
+    void testUnmarshalRejectsInvalidDates() {
+        assertThrows(DateTimeParseException.class, () -> this.dateAdapter.unmarshal("not-a-date"));
+        assertThrows(DateTimeParseException.class, () -> this.dateAdapter.unmarshal("2026-13"));
+        assertThrows(DateTimeParseException.class, () -> this.dateAdapter.unmarshal("26"));
     }
 
 }

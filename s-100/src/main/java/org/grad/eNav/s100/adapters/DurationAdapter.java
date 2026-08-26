@@ -36,6 +36,12 @@ import java.time.temporal.ChronoUnit;
  * exactly, those components are converted using the ISO-8601 estimated
  * durations of {@link ChronoUnit#YEARS} (365.2425 days) and
  * {@link ChronoUnit#MONTHS} (a twelfth of that).
+ * <p/>
+ * Marshalling always produces the {@code xs:duration} lexical form, whose
+ * components are unsigned integers and whose only permitted sign is a single
+ * leading minus (e.g. {@code -PT100H}), unlike
+ * {@link Duration#toString()} which signs the individual components
+ * ({@code PT-100H}).
  *
  * @author Nikolaos Vastardis (email: Nikolaos.Vastardis@gla-rad.org)
  */
@@ -51,7 +57,9 @@ public class DurationAdapter extends XmlAdapter<String, Duration> {
      */
     @Override
     public String marshal(Duration duration) {
-        return duration.toString();
+        // Duration.toString() signs the individual components (e.g. PT-100H),
+        // which is not a valid xs:duration; the sign has to lead the value
+        return duration.isNegative() ? "-" + duration.negated().toString() : duration.toString();
     }
 
     /**

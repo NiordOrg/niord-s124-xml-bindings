@@ -83,7 +83,7 @@ public enum MaintenanceFrequency implements CodeListValueTypeProvider {
     /**
      * The Enum Codespace.
      */
-    public static final String CODESPACE = "https://schemas.isotc211.org/19115/-3/mco/1.0";
+    public static final String CODESPACE = "https://schemas.isotc211.org/19115/-3/mmi/1.0";
 
     /**
      * The Enum Codelist.

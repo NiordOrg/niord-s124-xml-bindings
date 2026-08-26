@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * The S100 Dataset Discovery Metadata Builder Class.
@@ -58,6 +59,9 @@ public class S100DatasetDiscoveryMetadataBuilder {
     // The only MD_MaintenanceFrequencyCode values allowed by S-100 Part 17
     private static final Set<MaintenanceFrequency> ALLOWED_MAINTENANCE_FREQUENCIES =
             EnumSet.of(MaintenanceFrequency.AS_NEEDED, MaintenanceFrequency.IRREGULAR);
+
+    // The Marine Resource Name pattern of the S-100 Part 17 MRNType
+    private static final Pattern MRN_PATTERN = Pattern.compile("urn:mrn:.+");
 
     // Class Variables
     protected String fileName;
@@ -76,6 +80,7 @@ public class S100DatasetDiscoveryMetadataBuilder {
     protected BigInteger editionNumber;
     protected BigInteger updateNumber;
     protected LocalDate updateApplicationDate;
+    protected String referenceID;
     protected LocalDate issueDate;
     protected LocalTime issueTime;
     protected Geometry boundingBox;
@@ -302,6 +307,27 @@ public class S100DatasetDiscoveryMetadataBuilder {
     }
 
     /**
+     * Sets the reference ID, i.e. the reference back to the dataset ID of the
+     * dataset metadata that this update applies to. S-100 requires the value
+     * to be a Marine Resource Name, hence any other value will be rejected,
+     * and the reference is used if and only if the dataset is an update, which
+     * is checked while building the metadata.
+     *
+     * @param referenceID the reference ID
+     * @return the S-100 dataset discovery metadata builder
+     */
+    public S100DatasetDiscoveryMetadataBuilder setReferenceID(String referenceID) {
+        if(Objects.nonNull(referenceID) && !MRN_PATTERN.matcher(referenceID).matches()) {
+            throw new IllegalArgumentException(String.format("The reference ID %s is not a valid Marine "
+                    + "Resource Name (S-100 Part 17, S100_DatasetDiscoveryMetadata: \"The URN must be an "
+                    + "MRN\", i.e. it must match the \"%s\" pattern of the MRNType)",
+                    referenceID, MRN_PATTERN.pattern()));
+        }
+        this.referenceID = referenceID;
+        return this;
+    }
+
+    /**
      * Sets issue date.
      *
      * @param issueDate the issue date
@@ -383,7 +409,8 @@ public class S100DatasetDiscoveryMetadataBuilder {
     }
 
     /**
-     * Sets producing agency role.
+     * Sets producing agency role. The role of the producing agency
+     * responsibility is mandatory, hence it must always be provided.
      *
      * @param producingAgencyRole the producing agency role
      * @return the S-100 dataset discovery metadata builder
@@ -609,12 +636,20 @@ public class S100DatasetDiscoveryMetadataBuilder {
     }
 
     /**
-     * Sets maintenance period.
+     * Sets maintenance period. S-100 restricts the duration type used for the
+     * userDefinedMaintenanceFrequency by prohibiting zero and negative
+     * durations, hence any such value will be rejected.
      *
      * @param maintenancePeriod the maintenance period
      * @return the S-100 dataset discovery metadata builder
      */
     public S100DatasetDiscoveryMetadataBuilder setMaintenancePeriod(Duration maintenancePeriod) {
+        if(Objects.nonNull(maintenancePeriod) && (maintenancePeriod.isZero() || maintenancePeriod.isNegative())) {
+            throw new IllegalArgumentException(String.format("The maintenance period %s is not allowed in "
+                    + "the S-100 discovery metadata (S-100 Part 17, clause 17-4.9.1(1): S-100 restricts "
+                    + "the duration type by prohibiting zero or negative values of duration in "
+                    + "userDefinedMaintenanceFrequency)", maintenancePeriod));
+        }
         this.maintenancePeriod = maintenancePeriod;
         return this;
     }
@@ -656,6 +691,20 @@ public class S100DatasetDiscoveryMetadataBuilder {
         metadata.setEditionNumber(this.editionNumber);
         metadata.setUpdateNumber(this.updateNumber);
         metadata.setUpdateApplicationDate(this.updateApplicationDate);
+        // S-100 Part 17, S100_DatasetDiscoveryMetadata: the referenceID back to
+        // the dataset ID of the updated dataset "is used if and only if the
+        // dataset is an update"
+        if(S100Purpose.UPDATE == this.purpose && Objects.isNull(this.referenceID)) {
+            throw new IllegalStateException("The reference ID of the updated dataset must be provided for "
+                    + "update datasets (S-100 Part 17, S100_DatasetDiscoveryMetadata: referenceID is used "
+                    + "if and only if the dataset is an update)");
+        }
+        if(S100Purpose.UPDATE != this.purpose && Objects.nonNull(this.referenceID)) {
+            throw new IllegalStateException("The reference ID of the updated dataset must only be provided "
+                    + "for update datasets (S-100 Part 17, S100_DatasetDiscoveryMetadata: referenceID is "
+                    + "used if and only if the dataset is an update)");
+        }
+        metadata.setReferenceID(this.referenceID);
         metadata.setIssueDate(this.issueDate);
         metadata.setIssueTime(this.issueTime);
         metadata.setBoundingBox(S100ExchangeSetUtils.createS100GeographicBoundingBoxType(this.boundingBox));
@@ -703,11 +752,17 @@ public class S100DatasetDiscoveryMetadataBuilder {
         final AbstractCIPartyPropertyType abstractCIPartyPropertyType = new AbstractCIPartyPropertyType();
         abstractCIPartyPropertyType.setAbstractCIParty(this.citObjectFactory.createCIOrganisation(ciOrganisationType));
         ciResponsibilityType.setParties(Collections.singletonList(abstractCIPartyPropertyType));
-        if(Objects.nonNull(this.producingAgencyRole)) {
-            final CIRoleCodePropertyType ciRoleCodePropertyType = new CIRoleCodePropertyType();
-            ciRoleCodePropertyType.setCIRoleCode(this.producingAgencyRole.getCodeListValueType());
-            ciResponsibilityType.setRole(ciRoleCodePropertyType);
+        // the responsibility role is mandatory (ISO 19115-3 cit 2.0
+        // CI_Responsibility_Type declares the cit:role element without a
+        // minOccurs, so the exchange catalogue XSD requires it)
+        if(Objects.isNull(this.producingAgencyRole)) {
+            throw new IllegalStateException("The role of the producing agency must be provided (ISO "
+                    + "19115-3 CI_Responsibility: the cit:role element of the S-100 Part 17 "
+                    + "S100_DatasetDiscoveryMetadata producingAgency is mandatory)");
         }
+        final CIRoleCodePropertyType ciRoleCodePropertyType = new CIRoleCodePropertyType();
+        ciRoleCodePropertyType.setCIRoleCode(this.producingAgencyRole.getCodeListValueType());
+        ciResponsibilityType.setRole(ciRoleCodePropertyType);
         ciResponsibilityPropertyType.setCIResponsibility(ciResponsibilityType);
         metadata.setProducingAgency(ciResponsibilityPropertyType);
 

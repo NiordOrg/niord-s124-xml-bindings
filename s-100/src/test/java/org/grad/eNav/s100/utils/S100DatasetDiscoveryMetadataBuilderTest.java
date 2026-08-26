@@ -85,6 +85,7 @@ class S100DatasetDiscoveryMetadataBuilderTest {
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.editionNumber);
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.updateNumber);
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.updateApplicationDate);
+        assertNull(this.s100DatasetDiscoveryMetadataBuilder.referenceID);
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.issueDate);
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.issueTime);
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.boundingBox);
@@ -177,6 +178,7 @@ class S100DatasetDiscoveryMetadataBuilderTest {
         assertEquals(BigInteger.ONE, this.s100DatasetDiscoveryMetadataBuilder.editionNumber);
         assertEquals(BigInteger.ZERO, this.s100DatasetDiscoveryMetadataBuilder.updateNumber);
         assertEquals(LocalDate.parse("2023-01-01", this.dateFormat), this.s100DatasetDiscoveryMetadataBuilder.updateApplicationDate);
+        assertNull(this.s100DatasetDiscoveryMetadataBuilder.referenceID);
         assertEquals(LocalDate.parse("2023-01-02", this.dateFormat),this.s100DatasetDiscoveryMetadataBuilder.issueDate);
         assertEquals(LocalTime.parse("00:00:00", this.timeFormat), this.s100DatasetDiscoveryMetadataBuilder.issueTime);
         assertNull(this.s100DatasetDiscoveryMetadataBuilder.boundingBox);
@@ -225,6 +227,85 @@ class S100DatasetDiscoveryMetadataBuilderTest {
         assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenanceFrequency(MaintenanceFrequency.AS_NEEDED));
         assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenanceFrequency(MaintenanceFrequency.IRREGULAR));
         assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenanceFrequency(null));
+    }
+
+    /**
+     * Test that the maintenance periods that are not positive durations will
+     * be rejected, since S-100 prohibits zero and negative durations in the
+     * userDefinedMaintenanceFrequency.
+     */
+    @Test
+    void testSetMaintenancePeriodRequiresPositiveDuration() {
+        final IllegalArgumentException zero = assertThrows(IllegalArgumentException.class,
+                () -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenancePeriod(Duration.ZERO));
+        assertTrue(zero.getMessage().contains("prohibiting zero or negative values of duration"));
+
+        final IllegalArgumentException negative = assertThrows(IllegalArgumentException.class,
+                () -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenancePeriod(Duration.ofHours(-48)));
+        assertTrue(negative.getMessage().contains("prohibiting zero or negative values of duration"));
+
+        // While the positive durations are accepted
+        assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenancePeriod(Duration.ofSeconds(1)));
+        assertEquals(Duration.ofSeconds(1), this.s100DatasetDiscoveryMetadataBuilder.maintenancePeriod);
+        assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setMaintenancePeriod(null));
+        assertNull(this.s100DatasetDiscoveryMetadataBuilder.maintenancePeriod);
+    }
+
+    /**
+     * Test that the reference ID values that are not Marine Resource Names will
+     * be rejected.
+     */
+    @Test
+    void testSetReferenceIDRequiresMarineResourceName() {
+        final IllegalArgumentException notAnMrn = assertThrows(IllegalArgumentException.class,
+                () -> this.s100DatasetDiscoveryMetadataBuilder.setReferenceID("gla:grad:s125:datasets:XXXX"));
+        assertTrue(notAnMrn.getMessage().contains("must be an MRN"));
+
+        // The MRN namespace on its own does not identify anything either
+        final IllegalArgumentException empty = assertThrows(IllegalArgumentException.class,
+                () -> this.s100DatasetDiscoveryMetadataBuilder.setReferenceID("urn:mrn:"));
+        assertTrue(empty.getMessage().contains("must be an MRN"));
+
+        // While the MRNs are accepted
+        assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setReferenceID("urn:mrn:gla:grad:s125:datasets:XXXX"));
+        assertEquals("urn:mrn:gla:grad:s125:datasets:XXXX", this.s100DatasetDiscoveryMetadataBuilder.referenceID);
+        assertDoesNotThrow(() -> this.s100DatasetDiscoveryMetadataBuilder.setReferenceID(null));
+        assertNull(this.s100DatasetDiscoveryMetadataBuilder.referenceID);
+    }
+
+    /**
+     * Test that the reference ID back to the dataset ID of the updated dataset
+     * is emitted if and only if the dataset is an update.
+     */
+    @Test
+    void testBuildReferenceIDOnlyForUpdates() {
+        // An update dataset without a reference back to the updated dataset
+        final IllegalStateException missing = assertThrows(IllegalStateException.class,
+                () -> this.minimalBuilder()
+                        .setPurpose(S100Purpose.UPDATE)
+                        .build("dataset".getBytes()));
+        assertTrue(missing.getMessage().contains("if and only if the dataset is an update"));
+
+        // A reference back to an updated dataset for a dataset that is not an update
+        final IllegalStateException unexpected = assertThrows(IllegalStateException.class,
+                () -> this.minimalBuilder()
+                        .setPurpose(S100Purpose.NEW_DATASET)
+                        .setReferenceID("urn:mrn:gla:grad:s125:datasets:XXXX")
+                        .build("dataset".getBytes()));
+        assertTrue(unexpected.getMessage().contains("if and only if the dataset is an update"));
+
+        // While an update dataset carrying the reference is valid
+        final S100DatasetDiscoveryMetadata metadata = this.minimalBuilder()
+                .setPurpose(S100Purpose.UPDATE)
+                .setReferenceID("urn:mrn:gla:grad:s125:datasets:XXXX")
+                .build("dataset".getBytes());
+        assertEquals("urn:mrn:gla:grad:s125:datasets:XXXX", metadata.getReferenceID());
+
+        // And so is a dataset that is not an update and carries no reference
+        assertNull(this.minimalBuilder()
+                .setPurpose(S100Purpose.NEW_DATASET)
+                .build("dataset".getBytes())
+                .getReferenceID());
     }
 
     /**
@@ -292,6 +373,8 @@ class S100DatasetDiscoveryMetadataBuilderTest {
         assertNotNull(metadata.getClassification().getIsoType());
         assertNotNull(metadata.getClassification().getMDClassificationCode());
         assertEquals(SecurityClassification.UNCLASSIFIED.getValue(), metadata.getClassification().getMDClassificationCode().getValue());
+        // the codeListValue identifies an entry of the referenced code list
+        assertEquals("unclassified", metadata.getClassification().getMDClassificationCode().getCodeListValue());
         assertEquals(S100Purpose.NEW_DATASET, metadata.getPurpose());
         assertTrue(metadata.isNotForNavigation());
         assertNotNull(metadata.getSpecificUsage());
@@ -302,6 +385,7 @@ class S100DatasetDiscoveryMetadataBuilderTest {
         assertEquals(BigInteger.ONE, metadata.getEditionNumber());
         assertEquals(BigInteger.ZERO, metadata.getUpdateNumber());
         assertEquals(LocalDate.parse("2023-01-01", this.dateFormat), metadata.getUpdateApplicationDate());
+        assertNull(metadata.getReferenceID());
         assertEquals(LocalDate.parse("2023-01-02", this.dateFormat), metadata.getIssueDate());
         assertEquals(LocalTime.parse("00:00:00", this.timeFormat), metadata.getIssueTime());
         assertNotNull(metadata.getTemporalExtent());
@@ -497,6 +581,30 @@ class S100DatasetDiscoveryMetadataBuilderTest {
     }
 
     /**
+     * Test that the mandatory role of the producing agency responsibility will
+     * not be silently omitted.
+     */
+    @Test
+    void testBuildRequiresProducingAgencyRole() {
+        final IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new S100DatasetDiscoveryMetadataBuilder(SIGNATURE_PROVIDER)
+                        .setFileName("file:/dataset.XML")
+                        .setProducingAgency("producingAgency")
+                        .setProducingAgencyPhone("+44 1255 245000")
+                        .build("dataset".getBytes()));
+
+        assertTrue(exception.getMessage().contains("cit:role"));
+
+        // While the provided role is emitted in the producing agency responsibility
+        final S100DatasetDiscoveryMetadata metadata = this.minimalBuilder()
+                .setProducingAgencyRole(RoleCode.CUSTODIAN)
+                .build("dataset".getBytes());
+        assertNotNull(metadata.getProducingAgency().getCIResponsibility().getRole());
+        assertNotNull(metadata.getProducingAgency().getCIResponsibility().getRole().getCIRoleCode());
+        assertEquals(RoleCode.CUSTODIAN.getValue(), metadata.getProducingAgency().getCIResponsibility().getRole().getCIRoleCode().getValue());
+    }
+
+    /**
      * Test that the optional resource maintenance information is only emitted
      * when it has actually been provided.
      */
@@ -602,8 +710,8 @@ class S100DatasetDiscoveryMetadataBuilderTest {
 
     /**
      * Creates a new builder populated with the minimum mandatory information,
-     * i.e. the producing agency along with its contact details, and using the
-     * provided signature provider.
+     * i.e. the producing agency along with its role and contact details, and
+     * using the provided signature provider.
      *
      * @param signatureProvider the signature provider to be used, if any
      * @return the minimally populated S-100 dataset discovery metadata builder
@@ -612,6 +720,7 @@ class S100DatasetDiscoveryMetadataBuilderTest {
         return new S100DatasetDiscoveryMetadataBuilder(signatureProvider)
                 .setFileName("file:/dataset.XML")
                 .setProducingAgency("producingAgency")
+                .setProducingAgencyRole(RoleCode.ORIGINATOR)
                 .setProducingAgencyPhone("+44 1255 245000");
     }
 

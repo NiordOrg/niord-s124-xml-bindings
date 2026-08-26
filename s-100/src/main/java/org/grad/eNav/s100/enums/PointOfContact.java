@@ -27,7 +27,7 @@ public enum PointOfContact implements CodeListValueTypeProvider {
     PUBLISHER("publisher"),
     AUTHOR("author"),
     SPONSOR("sponsor"),
-    CO_AUTHOR("coauthor"),
+    CO_AUTHOR("coAuthor"),
     COLLABORATOR("collaborator"),
     EDITOR("editor"),
     MEDIATOR("mediator"),

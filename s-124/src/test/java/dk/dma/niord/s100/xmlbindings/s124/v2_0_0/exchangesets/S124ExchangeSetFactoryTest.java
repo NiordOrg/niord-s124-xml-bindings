@@ -539,7 +539,7 @@ class S124ExchangeSetFactoryTest {
         assertThat(productSpecification.getProductIdentifier()).isEqualTo("S-124");
         assertThat(productSpecification.getNumber()).isEqualTo(BigInteger.valueOf(124));
         assertThat(productSpecification.getVersion()).isEqualTo("2.0.0");
-        assertThat(productSpecification.getDate()).isEqualTo(LocalDate.of(2025, 3, 1));
+        assertThat(productSpecification.getDate()).isEqualTo(LocalDate.of(2025, 3, 28));
         // Part 17 mandates the catalogue creation date and time in UTC
         assertThat(catalogue.getIdentifier().getDateTime())
                 .isBetween(beforeBuild, LocalDateTime.now(ZoneOffset.UTC).plusMinutes(1));
@@ -670,19 +670,26 @@ class S124ExchangeSetFactoryTest {
                 .hasMessageContaining("unique");
     }
 
-    /** The producer code is part of every dataset file name, so it must be alphanumeric too. */
+    /**
+     * The producer code is the fixed width YYYY field of the clause 17-4.3 file name, issued
+     * as a four character code by the IHO Producer Code Register. A code of any other length
+     * or with other characters leaves the file name structure unreadable.
+     */
     @Test
-    void rejectsProducerCodesThatAreNotAlphanumeric() {
-        S124ExchangeSetFactory.Builder builder = S124ExchangeSetFactory.builder()
-                .datasets(List.of(newDataset("DK.S124.producer-code")))
-                .organization("DMA")
-                .producerCode("DK-00")
-                .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64]);
+    void rejectsProducerCodesThatAreNotFourAlphanumericCharacters() {
+        for (String producerCode : List.of("DK-00", "DK0", "DK000", "")) {
+            S124ExchangeSetFactory.Builder builder = S124ExchangeSetFactory.builder()
+                    .datasets(List.of(newDataset("DK.S124.producer-code")))
+                    .organization("DMA")
+                    .producerCode(producerCode)
+                    .certificatePem(testCertPem)
+                    .signer((alg, payload) -> new byte[64]);
 
-        assertThatThrownBy(builder::build)
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("producerCode");
+            assertThatThrownBy(builder::build)
+                    .as("producerCode \"%s\"", producerCode)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("producerCode");
+        }
     }
 
     /**

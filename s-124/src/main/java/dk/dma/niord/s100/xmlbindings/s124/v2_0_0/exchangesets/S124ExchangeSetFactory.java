@@ -841,14 +841,15 @@ public final class S124ExchangeSetFactory {
             }
             Objects.requireNonNull(organization, "organization must be set");
             Objects.requireNonNull(producerCode, "producerCode must be set");
-            // The producer code is the YYYY part of the Part 17, clause 17-4.3 dataset file
-            // name, whose remainder must be alphanumeric; a code carrying anything else would
-            // name every dataset file in the exchange set non-conformantly.
-            if (!producerCode.matches("[A-Za-z0-9]+")) {
+            // The producer code is the fixed width YYYY field of the XXXYYYYØØØØ dataset file
+            // name of S-100 Part 17, clause 17-4.3, and the IHO Producer Code Register issues
+            // it as a four character code. Any other length or character both misnames every
+            // dataset file and leaves a reader unable to tell where the unique code begins.
+            if (!producerCode.matches("[A-Za-z0-9]{4}")) {
                 throw new IllegalArgumentException(String.format(
-                        "producerCode \"%s\" must be alphanumeric: it is the producer code part of "
-                                + "the dataset file names of S-100 Part 17, clause 17-4.3, and comes "
-                                + "from the IHO Producer Code Register",
+                        "producerCode \"%s\" must be four alphanumeric characters: it is the YYYY "
+                                + "field of the dataset file names of S-100 Part 17, clause 17-4.3, "
+                                + "and the IHO Producer Code Register issues four character codes",
                         producerCode));
             }
             Objects.requireNonNull(certificatePem, "certificatePem must be set");

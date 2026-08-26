@@ -66,6 +66,28 @@ class S124DatasetInfoTest {
         assertThat(info.getApplicationProfile()).isEqualTo("1");
     }
 
+    /**
+     * The pairing holds from either side: Table 10b-4 leaves no combination of an update
+     * purpose with the base profile, or the reverse, so setting the profile sets the
+     * purpose it stands for rather than letting the header contradict itself.
+     */
+    @Test
+    void datasetPurposeFollowsTheApplicationProfile() {
+        S124DatasetInfo info = new S124DatasetInfo("NW-001", "DK00");
+
+        info.setApplicationProfile(S124DatasetInfo.UPDATE_APPLICATION_PROFILE);
+        assertThat(info.getPurpose()).isEqualTo(DatasetPurposeType.UPDATE);
+
+        info.setApplicationProfile(S124DatasetInfo.BASE_APPLICATION_PROFILE);
+        assertThat(info.getPurpose()).isEqualTo(DatasetPurposeType.BASE);
+
+        // ... in either order: an update dataset cannot be talked back into profile "1"
+        info.setPurpose(DatasetPurposeType.UPDATE);
+        info.setApplicationProfile(S124DatasetInfo.BASE_APPLICATION_PROFILE);
+        assertThat(info.getPurpose()).isEqualTo(DatasetPurposeType.BASE);
+        assertThat(info.getApplicationProfile()).isEqualTo("1");
+    }
+
     @Test
     void rejectsApplicationProfilesOutsideTable10b4() {
         S124DatasetInfo info = new S124DatasetInfo("NW-001", "DK00");
@@ -74,9 +96,20 @@ class S124DatasetInfoTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("applicationProfile");
         assertThat(info.getApplicationProfile()).isEqualTo("1");
+        assertThat(info.getPurpose()).isEqualTo(DatasetPurposeType.BASE);
 
         info.setApplicationProfile(S124DatasetInfo.UPDATE_APPLICATION_PROFILE);
         assertThat(info.getApplicationProfile()).isEqualTo("2");
+    }
+
+    /** datasetPurpose is mandatory, so a null purpose would only surface at XSD validation. */
+    @Test
+    void rejectsANullDatasetPurpose() {
+        S124DatasetInfo info = new S124DatasetInfo("NW-001", "DK00");
+
+        assertThatThrownBy(() -> info.setPurpose(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("purpose");
     }
 
     /**

@@ -24,10 +24,10 @@ public final class S124ProductSpecification {
      * <p/>
      * Clause 12.2.2.4 remarks "Must be 1.0.0" against the version attribute, but that
      * remark is a leftover of Edition 1.0.0 - the document carrying it is Edition 2.0.0
-     * throughout - and encoding it would contradict the productEdition ("2.0.0") of the
-     * dataset headers in the same exchange set, telling a consumer that datasets built
-     * against Ed 2.0.0 were produced against a specification that predates the features
-     * they use. Callers who must reproduce the literal table value can pass their own
+     * throughout, and the Product Specification Register its number attribute points at
+     * records this specification as version 2.0.0. Encoding 1.0.0 would also contradict
+     * the productEdition ("2.0.0") of the dataset headers in the same exchange set.
+     * Callers who must reproduce the literal table value can pass their own
      * {@link S100ProductSpecification} to
      * {@code S124ExchangeSetFactory.Builder#productSpecification}.
      */
@@ -43,12 +43,15 @@ public final class S124ProductSpecification {
 
     /**
      * S-124 Ed 2.0.0 clause 12.2.2.4 defines the date attribute as the "Publication date
-     * of this document", which is March 2025 (clause 1.6 and the title page; the document
-     * history dates the first operational edition to IHO CL 31/2025). The specification
-     * names no day, and S100_ProductSpecification.date is a full date, so the first of the
-     * publication month is encoded.
+     * of this document". The document itself names only the month (March 2025), so the
+     * day comes from the IHO GI Registry entry for S-124, which records version 2.0.0
+     * with the version date 2025-03-28 - the Product Specification Register that clause
+     * 12.2.2.4 points to for the number attribute.
+     *
+     * @see <a href="https://registry.iho.int/productspec/view.do?idx=218&amp;product_ID=S-124">
+     *      IHO GI Registry - S-124 Navigational Warnings</a>
      */
-    public static final LocalDate DATE = LocalDate.of(2025, 3, 1);
+    public static final LocalDate DATE = LocalDate.of(2025, 3, 28);
 
     private S124ProductSpecification() {
     }

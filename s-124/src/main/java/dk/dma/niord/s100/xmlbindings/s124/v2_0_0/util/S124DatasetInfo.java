@@ -3,6 +3,7 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util;
 import java.math.BigInteger;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.Objects;
 
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DatasetPurposeType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.MDTopicCategoryCode;
@@ -119,14 +120,19 @@ public class S124DatasetInfo {
     public String getApplicationProfile() { return applicationProfile; }
 
     /**
-     * Overrides the application profile. S-100 Part 10b Table 10b-4 defines only
-     * {@link #BASE_APPLICATION_PROFILE} and {@link #UPDATE_APPLICATION_PROFILE}, so any
-     * other value is rejected instead of being written into the dataset header, which the
-     * XSD - typing the element as a plain string - would happily accept.
+     * Sets the application profile, and with it the dataset purpose it stands for. S-100
+     * Part 10b Table 10b-4 defines only {@link #BASE_APPLICATION_PROFILE} and
+     * {@link #UPDATE_APPLICATION_PROFILE}, and pairs each with a purpose, so the two
+     * elements are one fact written twice: a header combining profile "2" with purpose
+     * "base" contradicts itself, and the XSD - typing the element as a plain string -
+     * would accept it. Any other value is rejected.
      */
     public void setApplicationProfile(String applicationProfile) {
-        if (!BASE_APPLICATION_PROFILE.equals(applicationProfile)
-                && !UPDATE_APPLICATION_PROFILE.equals(applicationProfile)) {
+        if (BASE_APPLICATION_PROFILE.equals(applicationProfile)) {
+            this.purpose = DatasetPurposeType.BASE;
+        } else if (UPDATE_APPLICATION_PROFILE.equals(applicationProfile)) {
+            this.purpose = DatasetPurposeType.UPDATE;
+        } else {
             throw new IllegalArgumentException(String.format(
                     "applicationProfile must be \"%s\" (base datasets) or \"%s\" (update datasets) "
                             + "(S-100 Part 10b Table 10b-4)",
@@ -141,13 +147,15 @@ public class S124DatasetInfo {
     public DatasetPurposeType getPurpose() { return purpose; }
 
     /**
-     * Sets the dataset purpose and moves the application profile along with it, because
-     * S-100 Part 10b Table 10b-4 ties the two together: "1" is the profile of a base
-     * dataset and "2" that of an update. Call {@link #setApplicationProfile(String)}
-     * afterwards to override the paired value.
+     * Sets the dataset purpose, and with it the application profile that S-100 Part 10b
+     * Table 10b-4 pairs with it: "1" for a base dataset and "2" for an update. The two
+     * cannot be set apart, see {@link #setApplicationProfile(String)}.
      */
     public void setPurpose(DatasetPurposeType purpose) {
-        this.purpose = purpose;
+        // datasetPurpose is a mandatory element of DatasetIdentificationType, so a null
+        // purpose would silently produce a dataset the S-124 XSD rejects.
+        this.purpose = Objects.requireNonNull(purpose, "purpose must be base or update "
+                + "(S-100 Part 10b Table 10b-4: datasetPurpose is mandatory)");
         this.applicationProfile = applicationProfileFor(purpose);
     }
     public BigInteger getUpdateNumber() { return updateNumber; }

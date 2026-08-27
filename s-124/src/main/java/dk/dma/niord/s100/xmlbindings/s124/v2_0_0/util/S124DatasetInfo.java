@@ -5,8 +5,10 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Objects;
 
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DatasetPurposeType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.MDTopicCategoryCode;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 
 /**
  * Plain carrier for the S-124 dataset identification fields. Sensible defaults for the
@@ -160,4 +162,42 @@ public class S124DatasetInfo {
     }
     public BigInteger getUpdateNumber() { return updateNumber; }
     public void setUpdateNumber(BigInteger updateNumber) { this.updateNumber = updateNumber; }
+
+    /**
+     * Writes these fields into the dataset identification block of an S-124 dataset, replacing
+     * whatever it held.
+     * <p/>
+     * Without this, the constraints this class enforces - above all the Table 10b-4 pairing of
+     * {@code applicationProfile} with {@code datasetPurpose}, which the XSD types as a free string
+     * and so cannot check - guarded nothing: a caller had no way to project a validated
+     * {@code S124DatasetInfo} onto the {@code DataSetIdentificationType} a dataset actually
+     * carries, and hand-populating that type bypassed every check here.
+     *
+     * @param dataset the dataset whose identification block is to be set; a dataset with none
+     *                cannot be completed, so one is expected to be present
+     */
+    public void applyTo(Dataset dataset) {
+        Objects.requireNonNull(dataset, "dataset is null");
+        applyTo(Objects.requireNonNull(dataset.getDatasetIdentificationInformation(),
+                "the dataset carries no datasetIdentificationInformation to populate"));
+    }
+
+    /** Writes these fields into the given dataset identification block. */
+    public void applyTo(DataSetIdentificationType identification) {
+        Objects.requireNonNull(identification, "identification is null");
+        identification.setEncodingSpecification(encodingSpecification);
+        identification.setEncodingSpecificationEdition(encodingSpecificationEdition);
+        identification.setProductIdentifier(productionIdentifier);
+        identification.setProductEdition(productionEdition);
+        identification.setApplicationProfile(applicationProfile);
+        identification.setDatasetFileIdentifier(fileIdentifier);
+        identification.setDatasetTitle(title);
+        identification.setDatasetReferenceDate(referenceDate);
+        identification.setDatasetLanguage(language);
+        identification.setDatasetAbstract(abstractText);
+        identification.getDatasetTopicCategories().clear();
+        identification.getDatasetTopicCategories().add(topicCategory);
+        identification.setDatasetPurpose(purpose);
+        identification.setUpdateNumber(updateNumber);
+    }
 }

@@ -73,9 +73,11 @@ public final class S124Utils {
      *       10b-8.2.4, requires and the schema leaves optional. The code is a pure function of the
      *       label, so this is a completion of the producer's intent rather than a change to it.</li>
      *   <li>{@link S124DatasetValidator#validate} rejects the dataset if it breaks a "must" of
-     *       S-124 that no schema can catch - more than one {@code NavwarnPreamble}, an agency name
-     *       where an S-62 producer code belongs, a time with no UTC designator, or a code that
-     *       contradicts its own label.</li>
+     *       S-124 or S-100 that no schema can catch - not exactly one {@code NavwarnPreamble}, an
+     *       agency name where an S-62 producer code belongs, a time with no UTC designator, an
+     *       association carrying neither {@code xlink:role} nor {@code xlink:arcrole}, an
+     *       {@code applicationProfile} outside Table 10b-4 or disagreeing with the dataset purpose,
+     *       or a code that contradicts its own label.</li>
      * </ol>
      * Both steps mutate and inspect the dataset in place; neither invents a value the producer did
      * not already imply.

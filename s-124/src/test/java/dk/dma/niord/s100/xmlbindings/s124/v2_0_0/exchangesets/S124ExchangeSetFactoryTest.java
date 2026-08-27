@@ -995,6 +995,20 @@ class S124ExchangeSetFactoryTest {
                 .getS100DatasetDiscoveryMetadatas().get(0).getBoundingBox();
     }
 
+    /** A minimal exchange set carrying a dataset that is knowingly not schema-valid. */
+    private static byte[] exchangeSetOfUnvalidated(Dataset dataset) {
+        return S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .validateAgainstSchema(false)
+                .build()
+                .toBytes();
+    }
+
     /** A minimal exchange set carrying the given dataset. */
     private static byte[] exchangeSetOf(Dataset dataset) {
         return S124ExchangeSetFactory.builder()
@@ -1650,6 +1664,9 @@ class S124ExchangeSetFactoryTest {
         ReferenceType header = new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
                 .createReferenceType();
         header.setHref("#PR.1");
+        // S-100 Part 10b clause 10b-9: an association must carry role or arcrole, so that a reader
+        // can tell it is an association role rather than an attribute (clause 10b-10 item 3).
+        header.setRole("http://www.iho.int/S124/gml/2.0/roles/header");
         part.setHeader(header);
         for (S100SpatialAttributeType property :
                 GeometryS124Converter.geometryToS124PointCurveSurfaceGeometry(geometry)) {
@@ -1666,14 +1683,34 @@ class S124ExchangeSetFactoryTest {
         members.add(part);
     }
 
-    /** Adds the NavwarnPreamble S-124 clause 12.2.2 aligns the temporal extent with. */
+    /**
+     * Sets the times S-124 clause 12.2.2 aligns the temporal extent with on the dataset's preamble.
+     * <p/>
+     * S-124 clause 4 allows exactly one NavwarnPreamble per dataset, so this configures the one
+     * {@link #newDataset(String)} already supplied rather than adding another.
+     */
     private static void addPreamble(Dataset dataset, OffsetDateTime publicationTime,
             OffsetDateTime cancellationDate) {
-        ObjectFactory of = new ObjectFactory();
-        NavwarnPreamble preamble = of.createNavwarnPreamble();
-        preamble.setId("PR.1");
+        NavwarnPreamble preamble = preambleOf(dataset);
         preamble.setPublicationTime(publicationTime);
         preamble.setCancellationDate(cancellationDate);
+    }
+
+    /** The dataset's single NavwarnPreamble. */
+    private static NavwarnPreamble preambleOf(Dataset dataset) {
+        return membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().stream()
+                .filter(NavwarnPreamble.class::isInstance)
+                .map(NavwarnPreamble.class::cast)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    /** A conformant NavwarnPreamble, as every S-124 dataset must carry exactly one. */
+    private static NavwarnPreamble newPreamble(String id) {
+        ObjectFactory of = new ObjectFactory();
+        NavwarnPreamble preamble = of.createNavwarnPreamble();
+        preamble.setId(id);
+        preamble.setPublicationTime(OffsetDateTime.parse("2026-01-15T06:00:00Z"));
         // generalArea, messageSeriesIdentifier, intService and navwarnTypeGeneral are all
         // mandatory in the S-124 schema.
         LocationNameType locationName = of.createLocationNameType();
@@ -1696,7 +1733,13 @@ class S124ExchangeSetFactoryTest {
         NavwarnTypeGeneralType typeGeneral = of.createNavwarnTypeGeneralType();
         typeGeneral.setValue(NavwarnTypeGeneralLabel.OTHER_HAZARDS);
         preamble.setNavwarnTypeGeneral(typeGeneral);
-        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().add(preamble);
+        return preamble;
+    }
+
+    /** A second preamble - the one thing S-124 clause 4 forbids. */
+    private static void addSecondPreamble(Dataset dataset) {
+        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements()
+                .add(newPreamble("PR.2"));
     }
 
     private static Dataset.Members membersOf(Dataset dataset) {
@@ -1769,9 +1812,10 @@ class S124ExchangeSetFactoryTest {
         BoundingShapeTypeImpl bbox = new BoundingShapeTypeImpl();
         bbox.setEnvelope(env);
         dataset.setBoundedBy(bbox);
-        // The S-124 schema declares <members> mandatory, though it may be empty; without it
-        // the dataset does not validate.
-        membersOf(dataset);
+        // The S-124 schema declares <members> mandatory, and clause 4 requires exactly one
+        // NavwarnPreamble in it.
+        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements()
+                .add(newPreamble("PR.1"));
 
         return dataset;
     }
@@ -1847,8 +1891,12 @@ class S124ExchangeSetFactoryTest {
     void descriptionIsOmittedWhenThePreambleNamesNoPlace() throws Exception {
         Dataset dataset = newDataset("DK.S124.nodescription");
         dataset.getDatasetIdentificationInformation().setDatasetAbstract("An abstract, but no place");
+        // generalArea is mandatory in the schema, so the only way to name no place is to leave the
+        // location name blank; validation is switched off because the resulting dataset is not
+        // schema-valid either way.
+        preambleOf(dataset).getGeneralAreas().get(0).getLocationNames().get(0).setText("");
 
-        assertThat(firstEntry(exchangeSetOf(dataset)).getDescription()).isNull();
+        assertThat(firstEntry(exchangeSetOfUnvalidated(dataset)).getDescription()).isNull();
     }
 
     /**
@@ -1884,7 +1932,12 @@ class S124ExchangeSetFactoryTest {
     /** With no publication time there is nothing to state, and the attribute is optional. */
     @Test
     void issueTimeIsOmittedWhenTheDatasetStatesNoPublicationTime() throws Exception {
-        assertThat(firstEntry(exchangeSetOf(newDataset("DK.S124.noissuetime"))).getIssueTime()).isNull();
+        Dataset dataset = newDataset("DK.S124.noissuetime");
+        // publicationTime is mandatory in the schema, so a dataset without one is not schema-valid;
+        // the catalogue must still describe it rather than invent a time.
+        preambleOf(dataset).setPublicationTime(null);
+
+        assertThat(firstEntry(exchangeSetOfUnvalidated(dataset)).getIssueTime()).isNull();
     }
 
     /**
@@ -2058,8 +2111,7 @@ class S124ExchangeSetFactoryTest {
     @Test
     void rejectsADatasetCarryingMoreThanOneNavwarnPreamble() {
         Dataset dataset = newDataset("DK.S124.twopreambles");
-        addPreamble(dataset, OffsetDateTime.of(2026, 8, 20, 6, 45, 0, 0, ZoneOffset.UTC), null);
-        addPreamble(dataset, OffsetDateTime.of(2026, 8, 21, 6, 45, 0, 0, ZoneOffset.UTC), null);
+        addSecondPreamble(dataset);
 
         assertThatThrownBy(() -> exchangeSetOf(dataset))
                 .isInstanceOf(S124ConformanceException.class)
@@ -2158,12 +2210,7 @@ class S124ExchangeSetFactoryTest {
     /** Gives the dataset a preamble naming a general area and, optionally, a locality. */
     private static NavwarnPreamble namePreamble(Dataset dataset, String generalArea, String locality) {
         addPreamble(dataset, OffsetDateTime.of(2026, 8, 20, 6, 45, 0, 0, ZoneOffset.UTC), null);
-        NavwarnPreamble preamble = dataset.getMembers()
-                .getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().stream()
-                .filter(NavwarnPreamble.class::isInstance)
-                .map(NavwarnPreamble.class::cast)
-                .findFirst()
-                .orElseThrow();
+        NavwarnPreamble preamble = preambleOf(dataset);
         preamble.getGeneralAreas().get(0).getLocationNames().clear();
         preamble.getGeneralAreas().get(0).getLocationNames().add(locationName("eng", generalArea));
         if (locality != null) {

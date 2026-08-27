@@ -8,6 +8,7 @@ import java.math.BigInteger;
 
 import org.junit.jupiter.api.Test;
 
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ReferenceType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 
 /**
@@ -42,15 +43,87 @@ class S124DatasetValidatorTest {
     }
 
     /**
-     * A dataset with no preamble is left alone: the library is equally the way a partial or
-     * non-warning dataset is serialised, and the exchange set builder supports one deliberately.
+     * Exactly one, so none is as wrong as two: clause 8.1.2 admits no S-124 dataset type without a
+     * preamble, and without one there is no warning to describe.
      */
     @Test
-    void acceptsADatasetWithNoPreamble() {
+    void rejectsADatasetWithNoNavwarnPreamble() {
         Dataset dataset = S124TestDatasets.datasetWithPreamble();
         dataset.getMembers().getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().clear();
 
+        assertThatThrownBy(() -> S124DatasetValidator.validate(dataset))
+                .isInstanceOf(S124ConformanceException.class)
+                .hasMessageContaining("carries no NavwarnPreamble")
+                .hasMessageContaining("S-124 clause 4");
+    }
+
+    /**
+     * S-100 Part 10b clause 10b-9: "Feature and information associations must encode at least one
+     * of the role or arcrole attributes of the reference" - without it, clause 10b-10 item 3 says a
+     * reader cannot tell an association role from an attribute.
+     */
+    @Test
+    void rejectsAnAssociationWithNeitherRoleNorArcrole() {
+        Dataset dataset = S124TestDatasets.datasetWithPreamble();
+        S124TestDatasets.addPartWithTimeOfDay(dataset, null, null);
+        S124TestDatasets.headerOfFirstPart(dataset).setRole(null);
+
+        assertThatThrownBy(() -> S124DatasetValidator.validate(dataset))
+                .isInstanceOf(S124ConformanceException.class)
+                .hasMessageContaining("neither xlink:role nor xlink:arcrole")
+                .hasMessageContaining("10b-9");
+    }
+
+    /** An arcrole alone satisfies the clause; it asks for at least one of the two. */
+    @Test
+    void acceptsAnAssociationCarryingOnlyArcrole() {
+        Dataset dataset = S124TestDatasets.datasetWithPreamble();
+        S124TestDatasets.addPartWithTimeOfDay(dataset, null, null);
+        ReferenceType header = S124TestDatasets.headerOfFirstPart(dataset);
+        header.setRole(null);
+        header.setArcrole("http://www.iho.int/S124/gml/2.0/arcroles/header");
+
         assertThat(S124DatasetValidator.violations(dataset)).isEmpty();
+    }
+
+    /**
+     * {@code maskReference} is a {@code gml:ReferenceType} too, but it lives in
+     * {@code S100_SpatialAttributeType} and is a spatial mask, not a feature or information
+     * association - clause 10b-9 does not reach it, so a role must not be demanded there.
+     */
+    @Test
+    void doesNotDemandARoleOnASpatialMaskReference() {
+        Dataset dataset = S124TestDatasets.datasetWithPreamble();
+        S124TestDatasets.addPartWithMaskReference(dataset);
+
+        assertThat(S124DatasetValidator.violations(dataset)).isEmpty();
+    }
+
+    /**
+     * S-100 Part 10b Table 10b-4 defines only "1" (base) and "2" (update). Every generated example
+     * carried the descriptive "NavigationalWarning", which names no profile the standard defines.
+     */
+    @Test
+    void rejectsAnApplicationProfileTable10b4DoesNotDefine() {
+        Dataset dataset = S124TestDatasets.datasetWithPreamble();
+        dataset.getDatasetIdentificationInformation().setApplicationProfile("NavigationalWarning");
+
+        assertThatThrownBy(() -> S124DatasetValidator.validate(dataset))
+                .isInstanceOf(S124ConformanceException.class)
+                .hasMessageContaining("NavigationalWarning")
+                .hasMessageContaining("Table 10b-4");
+    }
+
+    /** The profile and the purpose are one fact written twice, so they cannot disagree. */
+    @Test
+    void rejectsAnApplicationProfileThatContradictsTheDatasetPurpose() {
+        Dataset dataset = S124TestDatasets.datasetWithPreamble();
+        dataset.getDatasetIdentificationInformation()
+                .setApplicationProfile(S124DatasetInfo.UPDATE_APPLICATION_PROFILE);
+
+        assertThatThrownBy(() -> S124DatasetValidator.validate(dataset))
+                .isInstanceOf(S124ConformanceException.class)
+                .hasMessageContaining("contradicts itself");
     }
 
     /**

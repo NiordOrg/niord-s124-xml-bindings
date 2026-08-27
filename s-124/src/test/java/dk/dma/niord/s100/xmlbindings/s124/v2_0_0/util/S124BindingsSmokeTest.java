@@ -55,7 +55,9 @@ class S124BindingsSmokeTest {
         ident.setDatasetReferenceDate(LocalDate.of(2026, 1, 15));
         dataset.setDatasetIdentificationInformation(ident);
 
-        String xml = S124Utils.marshalS124(dataset);
+        // Validation off: this fixture exists to exercise the date adapters, not to be a
+        // conformant warning, and it deliberately carries nothing but the identification block.
+        String xml = S124Utils.marshalS124(dataset, true, false);
         assertThat(xml).contains("datasetReferenceDate>2026-01-15</");
 
         Dataset roundTripped = S124Utils.unmarshallS124(xml);

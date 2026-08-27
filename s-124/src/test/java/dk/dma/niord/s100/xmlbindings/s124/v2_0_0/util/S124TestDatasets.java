@@ -13,6 +13,7 @@ import javax.xml.datatype.XMLGregorianCalendar;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DatasetPurposeType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.MDTopicCategoryCode;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.PointProperty;
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.impl.DataSetIdentificationTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ReferenceType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
@@ -83,6 +84,8 @@ final class S124TestDatasets {
         ReferenceType header = new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
                 .createReferenceType();
         header.setHref("#PR.1");
+        // S-100 Part 10b clause 10b-9: an association must carry role or arcrole.
+        header.setRole("http://www.iho.int/S124/gml/2.0/roles/header");
         part.setHeader(header);
         FixedDateRangeType range = of.createFixedDateRangeType();
         range.setTimeOfDayStart(start);
@@ -90,6 +93,39 @@ final class S124TestDatasets {
         part.getFixedDateRanges().add(range);
         dataset.getMembers().getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().add(part);
         return range;
+    }
+
+    /**
+     * Adds a NavwarnPart carrying a point geometry whose spatial attribute has a
+     * {@code maskReference} with no role - legal, since a mask is not an association.
+     */
+    static void addPartWithMaskReference(Dataset dataset) {
+        addPartWithTimeOfDay(dataset, null, null);
+        NavwarnPart part = dataset.getMembers()
+                .getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().stream()
+                .filter(NavwarnPart.class::isInstance)
+                .map(NavwarnPart.class::cast)
+                .findFirst()
+                .orElseThrow();
+        PointProperty pointProperty = new dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0
+                .ObjectFactory().createPointProperty();
+        ReferenceType mask = new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
+                .createReferenceType();
+        mask.setHref("#MASK.1");
+        pointProperty.getMaskReferences().add(mask);
+        NavwarnPart.Geometry geometry = new ObjectFactory().createNavwarnPartGeometry();
+        geometry.setPointProperty(pointProperty);
+        part.getGeometries().add(geometry);
+    }
+
+    /** The {@code header} association of the dataset's first NavwarnPart. */
+    static ReferenceType headerOfFirstPart(Dataset dataset) {
+        return dataset.getMembers().getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().stream()
+                .filter(NavwarnPart.class::isInstance)
+                .map(NavwarnPart.class::cast)
+                .findFirst()
+                .orElseThrow()
+                .getHeader();
     }
 
     /** A time of day with a UTC designator, as S-124 clause 4.3.3 requires. */

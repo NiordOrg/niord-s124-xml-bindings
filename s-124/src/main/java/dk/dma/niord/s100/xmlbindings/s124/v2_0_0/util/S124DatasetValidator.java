@@ -2,12 +2,16 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import javax.xml.datatype.DatatypeConstants;
 import javax.xml.datatype.XMLGregorianCalendar;
 
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DatasetPurposeType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ReferenceType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.FixedDateRangeType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.MessageSeriesIdentifierType;
@@ -31,12 +35,6 @@ import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPreamble;
  *
  * <h2>What is deliberately not checked</h2>
  * <ul>
- *   <li><strong>A dataset with no {@code NavwarnPreamble}.</strong> S-124 clause 4 says "every
- *       compliant S-124 dataset must contain only one NavwarnPreamble", which a dataset carrying
- *       none also breaks. It is not rejected here because this library is equally the way a partial
- *       or non-warning dataset is serialised, and the exchange set builder deliberately supports a
- *       dataset without a preamble (it simply carries no temporal extent). Carrying <em>more</em>
- *       than one is the case that silently corrupts output, and that is rejected.</li>
  *   <li><strong>{@code navwarnTypeDetails} codes.</strong> S-124 declares it an open
  *       {@code S100_CodeList} over a free string, so no code can be derived or required.</li>
  *   <li><strong>Whether {@code agencyResponsibleForProduction} is a <em>registered</em> S-62
@@ -93,11 +91,54 @@ public final class S124DatasetValidator {
         }
         List<Violation> violations = new ArrayList<>();
         checkSinglePreamble(dataset, violations);
-        checkAgencyAndTimes(dataset, violations);
+        checkApplicationProfile(dataset, violations);
+        checkWalkedRules(dataset, violations);
         for (String mismatch : S124CodedValues.codeMismatches(dataset)) {
             violations.add(new Violation("S-100 Part 10b, clause 10b-8.2.4", mismatch));
         }
         return violations;
+    }
+
+    /**
+     * S-100 Part 10b, Table 10b-4, gives {@code applicationProfile} exactly two values - "1" for
+     * base datasets and "2" for update datasets - and pairs each with a {@code datasetPurpose}.
+     * <p/>
+     * The XSD types the element as a plain {@code CharacterString}, so anything at all passes
+     * schema validation; every generated example carried the descriptive
+     * {@code "NavigationalWarning"}, which names no profile the standard defines. The two elements
+     * are one fact written twice, so a header combining profile "2" with purpose "base"
+     * contradicts itself - and that, unlike the value itself, no reader can resolve.
+     */
+    private static void checkApplicationProfile(Dataset dataset, List<Violation> violations) {
+        DataSetIdentificationType identification = dataset.getDatasetIdentificationInformation();
+        if (identification == null) {
+            return;
+        }
+        String profile = identification.getApplicationProfile();
+        DatasetPurposeType purpose = identification.getDatasetPurpose();
+        if (profile == null) {
+            // Absence is a schema matter - Table 10b-4 gives it multiplicity 1 and the XSD
+            // enforces that - so S124XsdValidator reports it with better context than this could.
+            return;
+        }
+        if (!S124DatasetInfo.BASE_APPLICATION_PROFILE.equals(profile)
+                && !S124DatasetInfo.UPDATE_APPLICATION_PROFILE.equals(profile)) {
+            violations.add(new Violation("S-100 Part 10b, Table 10b-4", String.format(
+                    "applicationProfile is \"%s\"; S-100 Part 10b Table 10b-4 defines only \"%s\" "
+                            + "(base datasets) and \"%s\" (update datasets)",
+                    profile, S124DatasetInfo.BASE_APPLICATION_PROFILE,
+                    S124DatasetInfo.UPDATE_APPLICATION_PROFILE)));
+            return;
+        }
+        DatasetPurposeType implied = S124DatasetInfo.BASE_APPLICATION_PROFILE.equals(profile)
+                ? DatasetPurposeType.BASE
+                : DatasetPurposeType.UPDATE;
+        if (purpose != null && purpose != implied) {
+            violations.add(new Violation("S-100 Part 10b, Table 10b-4", String.format(
+                    "applicationProfile \"%s\" stands for a %s dataset but datasetPurpose is %s; "
+                            + "Table 10b-4 pairs the two, so the header contradicts itself",
+                    profile, implied.value(), purpose.value())));
+        }
     }
 
     /**
@@ -113,6 +154,11 @@ public final class S124DatasetValidator {
      * Beyond conformance, more than one preamble silently corrupts the exchange set: the discovery
      * metadata derives one temporal extent per dataset from the preamble, so the extra warnings'
      * publication and cancellation dates are dropped.
+     * <p/>
+     * Exactly one, so a dataset carrying none is rejected too. Clause 8.1.2 admits no dataset type
+     * that lacks a preamble, and the preamble is where a warning states what it is - without one
+     * the discovery metadata has no temporal extent, no place name and no series identifier to
+     * describe. A half-built dataset can still be serialised by turning validation off.
      */
     private static void checkSinglePreamble(Dataset dataset, List<Violation> violations) {
         long preambles = 0;
@@ -121,26 +167,88 @@ public final class S124DatasetValidator {
                 preambles++;
             }
         }
-        if (preambles > 1) {
-            violations.add(new Violation("S-124 clause 4 / clause 8.1.2", String.format(
-                    "the dataset carries %d NavwarnPreamble instances, but S-124 allows only one "
-                            + "navigational warning per dataset; split the warnings into one dataset "
-                            + "each, or encode an in-force bulletin as a single preamble whose "
-                            + "References instance has referenceCategory 3 (in-force)",
-                    preambles)));
+        if (preambles == 1) {
+            return;
         }
+        if (preambles == 0) {
+            violations.add(new Violation("S-124 clause 4 / clause 8.1.2",
+                    "the dataset carries no NavwarnPreamble; S-124 clause 4 requires every "
+                            + "compliant dataset to contain exactly one, and clause 8.1.2 admits "
+                            + "no dataset type without one"));
+            return;
+        }
+        violations.add(new Violation("S-124 clause 4 / clause 8.1.2", String.format(
+                "the dataset carries %d NavwarnPreamble instances, but S-124 allows only one "
+                        + "navigational warning per dataset; split the warnings into one dataset "
+                        + "each, or encode an in-force bulletin as a single preamble whose "
+                        + "References instance has referenceCategory 3 (in-force)",
+                preambles)));
     }
 
-    /** The two attribute-level "must" rules of S-124 clause 4.3.3, wherever they occur. */
-    private static void checkAgencyAndTimes(Dataset dataset, List<Violation> violations) {
-        BindingWalk.forEach(dataset, node -> {
+    /**
+     * The property names under which S-124 and the S-100 GML profile encode a feature or
+     * information association, all typed {@code gml:ReferenceType}.
+     * <p/>
+     * Listed rather than matched by type, because the same type also encodes
+     * {@code maskReference} inside {@code S100_SpatialAttributeType} - a spatial mask, not an
+     * association, and so outside clause 10b-9. The S-124 associations are {@code theWarning},
+     * {@code theReferences}, {@code header}, {@code affects}, {@code thePositionProvider},
+     * {@code impacts} and {@code theCartographicText} (124_2.0.0.xsd); {@code informationAssociation}
+     * is the S-100 GML profile's own, carried by every geometry type. Names are the JAXB property
+     * names, so repeated elements appear in their plural form.
+     */
+    private static final Set<String> ASSOCIATION_ROLES = Set.of(
+            "theWarning", "theReferences", "header", "affects", "thePositionProviders",
+            "impacts", "theCartographicText", "informationAssociations");
+
+    /** The rules that apply to an attribute wherever in the dataset it occurs. */
+    private static void checkWalkedRules(Dataset dataset, List<Violation> violations) {
+        BindingWalk.forEachProperty(dataset, (property, node) -> {
             if (node instanceof MessageSeriesIdentifierType series) {
                 checkAgency(series.getAgencyResponsibleForProduction(), violations);
             } else if (node instanceof FixedDateRangeType range) {
                 checkUtc("timeOfDayStart", range.getTimeOfDayStart(), violations);
                 checkUtc("timeOfDayEnd", range.getTimeOfDayEnd(), violations);
+            } else if (node instanceof ReferenceType reference && ASSOCIATION_ROLES.contains(property)) {
+                checkAssociation(property, reference, violations);
             }
         });
+    }
+
+    /**
+     * S-100 Ed 5.2.0 Part 10b, clause 10b-9: "Feature and information associations must encode at
+     * least one of the role or arcrole attributes of the reference."
+     * <p/>
+     * The rule is not decoration. Clause 10b-10 item 3 makes those attributes the way a processor
+     * tells an association apart from an attribute at all: "If X2 has XML attributes xlink:href and
+     * xlink:role and/or xlink:arcrole it is an association role." A reference carrying only
+     * {@code xlink:href} is therefore not merely terse - a generic S-100 reader cannot classify it.
+     * <p/>
+     * S-124 nowhere defines role or arcrole values, so the producer chooses them; the library
+     * cannot fill them in the way it fills an enumeration code, because there is no listed value to
+     * derive. Which elements are associations is decided by {@link #ASSOCIATION_ROLES}, not by the
+     * type, so that {@code maskReference} - the same type in a non-association position - is left
+     * alone.
+     * <p/>
+     * Every association that is present is checked, whether or not it carries an {@code href}: the
+     * clause conditions on the reference existing, not on it resolving, and an association element
+     * with no target is in any case not something a producer meant to write.
+     */
+    private static void checkAssociation(String property, ReferenceType reference,
+            List<Violation> violations) {
+        boolean hasRole = reference.getRole() != null && !reference.getRole().isBlank();
+        boolean hasArcrole = reference.getArcrole() != null && !reference.getArcrole().isBlank();
+        if (hasRole || hasArcrole) {
+            return;
+        }
+        String target = reference.getHref() == null || reference.getHref().isBlank()
+                ? "nothing"
+                : "\"" + reference.getHref() + "\"";
+        violations.add(new Violation("S-100 Part 10b, clause 10b-9", String.format(
+                "the %s association, referencing %s, carries neither xlink:role nor xlink:arcrole, "
+                        + "so a reader cannot tell it is an association role rather than an "
+                        + "attribute (clause 10b-10 item 3); set one of them on the reference",
+                property, target)));
     }
 
     private static void checkAgency(String agency, List<Violation> violations) {

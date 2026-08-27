@@ -148,12 +148,13 @@ import jakarta.xml.bind.Marshaller;
  * the S-124 application schema itself, which S-124 clause 8.1.1 requires of every dataset. The
  * latter can be turned off with {@link Builder#validateAgainstSchema(boolean)}.</p>
  *
- * <p><strong>Producer responsibilities the factory cannot check.</strong> S-100 Part 10b, clause
- * 10b-9, requires that "Feature and information associations must encode at least one of the role
- * or arcrole attributes of the reference". The factory never constructs those references - the
- * {@code header}, {@code theWarning} and {@code theReferences} associations come from the caller -
- * and S-124 defines no role or arcrole values to check them against, so populating them remains
- * the producer's responsibility.</p>
+ * <p><strong>Association roles.</strong> S-100 Part 10b, clause 10b-9, requires that "Feature and
+ * information associations must encode at least one of the role or arcrole attributes of the
+ * reference", because clause 10b-10 item 3 makes those attributes how a reader tells an association
+ * role from an attribute at all. The factory never constructs those references - {@code header},
+ * {@code theWarning}, {@code theReferences} and the rest come from the producer - and S-124 defines
+ * no values to derive, so the library cannot fill them the way it fills an enumeration code. It
+ * rejects a reference that carries neither.</p>
  */
 public final class S124ExchangeSetFactory {
 

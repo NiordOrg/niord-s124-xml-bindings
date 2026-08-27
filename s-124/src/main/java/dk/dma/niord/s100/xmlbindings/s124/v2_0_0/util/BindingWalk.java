@@ -7,6 +7,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import jakarta.xml.bind.JAXBElement;
@@ -37,27 +38,42 @@ final class BindingWalk {
 
     /** Applies the visitor to the root and to every binding object reachable from it. */
     static void forEach(Object root, Consumer<Object> visitor) {
-        walk(root, Collections.newSetFromMap(new IdentityHashMap<>()), visitor);
+        forEachProperty(root, (property, node) -> visitor.accept(node));
     }
 
-    private static void walk(Object node, Set<Object> seen, Consumer<Object> visitor) {
+    /**
+     * As {@link #forEach}, but also tells the visitor which property the object was reached
+     * through - the getter name less its {@code get} prefix, decapitalised, or {@code null} for the
+     * root. Elements of a collection are reported under the property the collection came from.
+     * <p/>
+     * Some rules apply to a type only in certain positions. {@code gml:ReferenceType} is the case
+     * that forced this: it encodes S-124's feature and information associations, but the same type
+     * also encodes {@code maskReference} inside {@code S100_SpatialAttributeType}, which is a
+     * spatial mask rather than an association, so a check keyed on the type alone would misfire.
+     */
+    static void forEachProperty(Object root, BiConsumer<String, Object> visitor) {
+        walk(null, root, Collections.newSetFromMap(new IdentityHashMap<>()), visitor);
+    }
+
+    private static void walk(String property, Object node, Set<Object> seen,
+            BiConsumer<String, Object> visitor) {
         if (node == null) {
             return;
         }
         if (node instanceof Collection<?> collection) {
             for (Object element : collection) {
-                walk(element, seen, visitor);
+                walk(property, element, seen, visitor);
             }
             return;
         }
         if (node instanceof JAXBElement<?> element) {
-            walk(element.getValue(), seen, visitor);
+            walk(property, element.getValue(), seen, visitor);
             return;
         }
         if (!isBindingType(node.getClass()) || !seen.add(node)) {
             return;
         }
-        visitor.accept(node);
+        visitor.accept(property, node);
         for (Method getter : node.getClass().getMethods()) {
             if (getter.getParameterCount() != 0 || !getter.getName().startsWith("get")
                     || "getClass".equals(getter.getName())) {
@@ -93,8 +109,14 @@ final class BindingWalk {
                 // Skipping it keeps a hostile or half-built object graph from failing the marshal.
                 continue;
             }
-            walk(child, seen, visitor);
+            walk(propertyName(getter), child, seen, visitor);
         }
+    }
+
+    /** The property a getter reads: its name less the {@code get} prefix, decapitalised. */
+    private static String propertyName(Method getter) {
+        String name = getter.getName().substring(3);
+        return name.isEmpty() ? name : Character.toLowerCase(name.charAt(0)) + name.substring(1);
     }
 
     /**

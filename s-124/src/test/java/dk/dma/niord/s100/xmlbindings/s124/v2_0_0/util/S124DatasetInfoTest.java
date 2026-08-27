@@ -166,7 +166,9 @@ class S124DatasetInfoTest {
         dataset.setBoundedBy(boundedBy);
         dataset.setMembers(of.createDatasetMembers());
 
-        String xml = S124Utils.marshalS124(dataset);
+        // Validation off: the subject is the identification block S124DatasetInfo produces, and
+        // the fixture carries no NavwarnPreamble to make it a conformant warning.
+        String xml = S124Utils.marshalS124(dataset, true, false);
         assertThatCode(() -> S124XsdValidator.validate(xml))
                 .as("XSD validation errors in:%n%s", xml)
                 .doesNotThrowAnyException();

@@ -1889,29 +1889,20 @@ class S124ExchangeSetFactoryTest {
      */
     @Test
     void descriptionIsOmittedWhenThePreambleNamesNoPlace() throws Exception {
-        Dataset dataset = newDataset("DK.S124.nodescription");
-        dataset.getDatasetIdentificationInformation().setDatasetAbstract("An abstract, but no place");
-        // generalArea is mandatory in the schema, so the only way to name no place is to leave the
-        // location name blank; validation is switched off because the resulting dataset is not
-        // schema-valid either way.
-        preambleOf(dataset).getGeneralAreas().get(0).getLocationNames().get(0).setText("");
+        // generalArea is mandatory and its locationName text is an unrestricted xs:string
+        // (124_2.0.0.xsd textType), so naming no place means an empty or whitespace-only name -
+        // both of which are schema-valid, hence full validation below.
+        for (String blank : List.of("", "   ")) {
+            Dataset dataset = newDataset("DK.S124.nodescription");
+            dataset.getDatasetIdentificationInformation()
+                    .setDatasetAbstract("An abstract, but no place");
+            preambleOf(dataset).getGeneralAreas().get(0).getLocationNames().get(0).setText(blank);
+            preambleOf(dataset).getLocalities().clear();
 
-        assertThat(firstEntry(exchangeSetOfUnvalidated(dataset)).getDescription()).isNull();
-    }
-
-    /**
-     * generalArea is mandatory in the schema but its locationName text is an unrestricted
-     * xs:string, so a preamble can name a place with nothing but whitespace and still validate.
-     * There is then no content for the description to match, so it is omitted rather than emitted
-     * blank.
-     */
-    @Test
-    void descriptionIsOmittedWhenThePreambleNamesOnlyBlankPlaces() throws Exception {
-        Dataset dataset = newDataset("DK.S124.blankplace");
-        dataset.getDatasetIdentificationInformation().setDatasetAbstract("An abstract, but no place");
-        namePreamble(dataset, "   ", null);
-
-        assertThat(firstEntry(exchangeSetOf(dataset)).getDescription()).isNull();
+            assertThat(firstEntry(exchangeSetOf(dataset)).getDescription())
+                    .as("description for a location name of \"%s\"", blank)
+                    .isNull();
+        }
     }
 
     /**

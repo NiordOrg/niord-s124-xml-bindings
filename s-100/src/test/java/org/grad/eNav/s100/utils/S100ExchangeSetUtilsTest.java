@@ -732,4 +732,38 @@ class S100ExchangeSetUtilsTest {
         assertArrayEquals(certificate.getEncoded(), der);
         assertEquals(inString, Base64.getEncoder().encodeToString(der));
     }
+
+    /**
+     * The bounding box helper is shared by every S-100 product, so it must hand back the caller's
+     * coordinates unaltered.
+     * <p/>
+     * S-100 Part 17 states no precision for boundingBox - its Remarks column is empty - and the
+     * 7-decimal limit of S-124 clause 8.2 is a rule of that product specification alone. Rounding
+     * here would silently coarsen the extent of any product whose datasets carry finer geometry,
+     * and, because half-up rounding can move a bound inward, could leave a catalogue declaring a
+     * box that no longer contains its own data. S-124 applies its own quantisation before it calls
+     * this helper.
+     */
+    @Test
+    void boundingBoxKeepsTheFullPrecisionOfTheSuppliedGeometry() {
+        // The east and north bounds are chosen so that rounding to 7 decimals would move them
+        // INWARD, which is the case that makes the declared box stop containing its own data.
+        double west = 12.6712345678;
+        double east = 12.77234561;
+        double south = 55.4967123456;
+        double north = 55.59672341;
+        Geometry geometry = new GeometryFactory().toGeometry(new Envelope(west, east, south, north));
+
+        S100GeographicBoundingBoxType box = S100ExchangeSetUtils.createS100GeographicBoundingBoxType(geometry);
+
+        assertEquals(BigDecimal.valueOf(west), box.getWestBoundLongitude().getDecimal());
+        assertEquals(BigDecimal.valueOf(east), box.getEastBoundLongitude().getDecimal());
+        assertEquals(BigDecimal.valueOf(south), box.getSouthBoundLatitude().getDecimal());
+        assertEquals(BigDecimal.valueOf(north), box.getNorthBoundLatitude().getDecimal());
+        // The declared box still contains the geometry it was built from, to the last digit.
+        assertTrue(box.getEastBoundLongitude().getDecimal().doubleValue() >= east,
+                "eastBoundLongitude must not round inward");
+        assertTrue(box.getNorthBoundLatitude().getDecimal().doubleValue() >= north,
+                "northBoundLatitude must not round inward");
+    }
 }

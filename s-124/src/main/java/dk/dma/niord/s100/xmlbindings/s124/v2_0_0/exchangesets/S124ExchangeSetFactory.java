@@ -2,6 +2,8 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
@@ -57,12 +59,18 @@ import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DataSetIdentificationTyp
 import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.S100SpatialAttributeType;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.AbstractGMLType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.GeneralAreaType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.LocalityType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.LocationNameType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.MessageSeriesIdentifierType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnAreaAffected;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPart;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPreamble;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.TextPlacement;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124ConformanceException;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124Utils;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124XsdValidator;
 import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Marshaller;
@@ -107,7 +115,7 @@ import jakarta.xml.bind.Marshaller;
  * {@code S100_DatasetDiscoveryMetadata}, which clause 12.1 restricts "to remove attributes that
  * are not relevant to a Navigational Warning service": none of {@code editionNumber},
  * {@code updateNumber}, {@code dataCoverage}, {@code replacedData}, {@code resourceMaintenance},
- * {@code protectionScheme} and {@code navigationPurpose} is encoded. Two entries are read off
+ * {@code protectionScheme} and {@code navigationPurpose} is encoded. Four entries are read off
  * the dataset itself:</p>
  * <ul>
  *   <li>{@code boundingBox}, which clause 12.2.2 makes mandatory, is the dataset's
@@ -120,19 +128,33 @@ import jakarta.xml.bind.Marshaller;
  *       known expiry date and time" and clause 9.3 cancels such a dataset by the pairing of that
  *       date with this metadata - and then carries the preamble's {@code publicationTime} and
  *       {@code cancellationDate}, the values clause 12.2.2 requires it to align with.</li>
+ *   <li>{@code description} is the preamble's {@code generalArea} and {@code locality}, joined -
+ *       clause 12.2.2 requires that "If used, content of this attribute must match the content of
+ *       the generalArea and locality attributes of the dataset NavwarnPreamble". The name in the
+ *       catalogue's first configured {@link Builder#locales(List) locale} is used, and a preamble
+ *       naming no place leaves the attribute out, which its 0..1 multiplicity allows.</li>
+ *   <li>{@code datasetID} is the {@code interoperabilityIdentifier} of the preamble's
+ *       {@code messageSeriesIdentifier} when the dataset states one, which clause 12.2.2 requires
+ *       it to match; otherwise it is synthesised as
+ *       {@code <}{@link Builder#datasetMrnPrefix(String) datasetMrnPrefix}{@code >:<dataset gml id>}.
+ *       Either way it is a Marine Resource Name, as the same clause requires.</li>
  * </ul>
  *
- * <p><strong>Producer responsibilities the factory cannot check.</strong> Two further entries of
- * the profile depend on the textual content of the dataset's {@code NavwarnPreamble}, which this
- * factory does not interpret:</p>
- * <ul>
- *   <li>{@code datasetID} is synthesised as {@code <datasetMrnPrefix>:<dataset gml id>};
- *       S-124 requires it to match the {@code interoperabilityIdentifier} of the dataset's
- *       {@code messageSeriesIdentifier} when that is present, so producers must choose the
- *       dataset id and {@link Builder#datasetMrnPrefix(String) MRN prefix} accordingly.</li>
- *   <li>{@code description} is taken from the dataset's {@code datasetAbstract}; S-124
- *       requires its content to match the preamble's {@code generalArea} and {@code locality}.</li>
- * </ul>
+ * <p><strong>Conformance checking.</strong> Every dataset is checked before it is signed and
+ * packaged, because a non-conformant dataset that ships with a valid signature over it reads as
+ * authoritative and can only be withdrawn by re-signing the whole exchange set. Two layers apply:
+ * {@code S124Utils.marshalS124} normalises and checks the rules the GML schema cannot express (see
+ * {@code S124DatasetValidator}), and this factory then validates the marshalled document against
+ * the S-124 application schema itself, which S-124 clause 8.1.1 requires of every dataset. The
+ * latter can be turned off with {@link Builder#validateAgainstSchema(boolean)}.</p>
+ *
+ * <p><strong>Association roles.</strong> S-100 Part 10b, clause 10b-9, requires that "Feature and
+ * information associations must encode at least one of the role or arcrole attributes of the
+ * reference", because clause 10b-10 item 3 makes those attributes how a reader tells an association
+ * role from an attribute at all. The factory never constructs those references - {@code header},
+ * {@code theWarning}, {@code theReferences} and the rest come from the producer - and S-124 defines
+ * no values to derive, so the library cannot fill them the way it fills an enumeration code. It
+ * rejects a reference that carries neither.</p>
  */
 public final class S124ExchangeSetFactory {
 
@@ -141,6 +163,30 @@ public final class S124ExchangeSetFactory {
     private static final String DEFAULT_EXCHANGE_SET_MRN_PREFIX = "urn:mrn:iho:s124:exchangeset";
     /** S-124 clause 12.2.2 fixes specificUsage: "Must always be 'Navigational Warning Service'". */
     public static final String SPECIFIC_USAGE = "Navigational Warning Service";
+    /**
+     * Joins the {@code generalArea} and {@code locality} names of a discovery metadata
+     * description. S-124 clause 12.2.2 requires the description to "match the content of" both
+     * attributes without fixing a punctuation, so the two are read as the successively narrower
+     * place names they are - "The Sound, Drogden Channel".
+     */
+    private static final String DESCRIPTION_SEPARATOR = ", ";
+
+    /**
+     * The syntax of a Marine Resource Name, which S-124 clause 12.2.2 requires of {@code datasetID}
+     * ("The URN must be an MRN"). S-100 Part 3, clause 3-10, gives the grammar as
+     * {@code <URN> ::= "urn:mrn:" <OID> ":" <OSS>} - the namespace, an organisation identifier and
+     * at least one namespace specific string.
+     * <p/>
+     * The {@code urn:mrn:} namespace is matched case-sensitively even though RFC 2141 treats URN
+     * schemes as case-insensitive, because the catalogue schema does: {@code MRNType} restricts
+     * {@code xs:anyURI} with {@code <xs:pattern value="urn:mrn:.+"/>}
+     * (S100_ExchangeCatalogue.xsd), and XSD patterns are case-sensitive. Accepting
+     * {@code URN:MRN:...} here would let a signed but schema-invalid CATALOG.XML through. The
+     * organisation and namespace specific parts stay case-insensitive, which the schema allows.
+     */
+    private static final Pattern MRN_PATTERN =
+            Pattern.compile("urn:mrn:[A-Za-z0-9][A-Za-z0-9-]*(:[A-Za-z0-9()+,\\-.:=@;$_!*'%/?#]+)+");
+
     /** S-124 clause 9.6: "S-124 datasets must not exceed 50KB." */
     private static final int MAX_DATASET_SIZE_BYTES = 50 * 1024;
     /**
@@ -148,6 +194,12 @@ public final class S124ExchangeSetFactory {
      * encoded as a bounding box; see {@link #withMinimumSpan(Geometry)}.
      */
     private static final double MIN_EXTENT_SPAN_DEGREES = 0.0001;
+
+    /**
+     * The number of fraction digits a latitude or longitude is encoded with in the discovery
+     * metadata; see {@link #quantized(Geometry)}. S-124 clause 8.2 allows "7 or fewer".
+     */
+    private static final int COORDINATE_SCALE = 7;
 
     // S-100 Part 17, clause 17-4.2: all S-100 content lives in the single top level root
     // folder S100_ROOT, which also holds CATALOG.XML and its signature CATALOG.SIGN.
@@ -192,7 +244,9 @@ public final class S124ExchangeSetFactory {
                 putFileEntry(zos, CATALOG_SIGN, catalogSig);
             }
             return baos.toByteArray();
-        } catch (ExchangeSetException e) {
+        } catch (ExchangeSetException | S124ConformanceException e) {
+            // Both already name the artefact and the clause they failed on; wrapping them
+            // in a generic "failed to build" would bury that behind a cause chain.
             throw e;
         } catch (Exception e) {
             throw new ExchangeSetException("Failed to build S-124 exchange set", e);
@@ -212,7 +266,17 @@ public final class S124ExchangeSetFactory {
                                 + "datasets different unique codes",
                         fileName));
             }
-            byte[] bytes = S124Utils.marshalS124(dataset).getBytes(StandardCharsets.UTF_8);
+            String xml = S124Utils.marshalS124(dataset);
+            // S-124 clause 8.1.1: "Feature instances must validate against the schema and conform
+            // to all other requirements specified in this data product specification". marshalS124
+            // has just applied the requirements no schema can express; this is the other half. It
+            // runs before the dataset is signed and packaged, because a schema-invalid dataset that
+            // ships with a valid signature over it reads as authoritative and is expensive to
+            // withdraw - every correction re-signs the whole exchange set.
+            if (cfg.validateAgainstSchema) {
+                validateAgainstSchema(fileName, xml);
+            }
+            byte[] bytes = xml.getBytes(StandardCharsets.UTF_8);
             if (bytes.length > MAX_DATASET_SIZE_BYTES) {
                 throw new ExchangeSetException(String.format(
                         "S-124 dataset %s is %d bytes, exceeding the %d byte limit of S-124 clause 9.6",
@@ -257,6 +321,30 @@ public final class S124ExchangeSetFactory {
                     declared, cfg.producerCode));
         }
         return declared;
+    }
+
+    /**
+     * Validates a marshalled dataset against the S-124 GML application schema, naming the file in
+     * the failure so a producer knows which of them to look at.
+     * <p/>
+     * The S-124 schemas ship with this library, so the check needs no network access and cannot
+     * drift from the bindings that produced the document. {@code CATALOG.XML} is deliberately not
+     * checked here: the S-100 Part 17 exchange catalogue schema imports the ISO 19115-3 schemas,
+     * which are not vendored, so compiling it would reach out to schemas.isotc211.org - and an
+     * exchange set that cannot be built without internet access is worse than one whose catalogue
+     * is checked only in this project's own test suite, where that access exists.
+     */
+    private static void validateAgainstSchema(String fileName, String xml) {
+        try {
+            S124XsdValidator.validate(xml);
+        } catch (org.xml.sax.SAXException e) {
+            throw new ExchangeSetException(String.format(
+                    "%s is not valid against its XML schema, which S-124 clause 8.1.1 requires of "
+                            + "every exchange set document: %s",
+                    fileName, e.getMessage()), e);
+        } catch (java.io.IOException e) {
+            throw new ExchangeSetException(String.format("Failed to validate %s", fileName), e);
+        }
     }
 
     /** The Part 17, clause 17-4.3 file name pattern for S-124 datasets of one producer. */
@@ -611,7 +699,11 @@ public final class S124ExchangeSetFactory {
                 .setCity(cfg.city)
                 .setPostalCode(cfg.postalCode)
                 .setCountry(cfg.country)
-                .setAdministrativeArea(Optional.ofNullable(cfg.administrativeArea).orElse(cfg.country))
+                // No fallback to the country: an administrative area is a subdivision of a
+                // country, not a synonym for one, and the attribute is optional. Substituting
+                // the country would state something the caller never said - and something the
+                // dataset-level producing agency below does not say either.
+                .setAdministrativeArea(cfg.administrativeArea)
                 .setLocales(cfg.locales)
                 .setDescription(cfg.description)
                 .setComment(cfg.comment)
@@ -665,9 +757,12 @@ public final class S124ExchangeSetFactory {
         for (DatasetFile df : datasetFiles) {
             Geometry bbox = datasetExtent(df);
             DataSetIdentificationType ident = df.dataset.getDatasetIdentificationInformation();
+            // The fallback is UTC rather than the JVM default zone, like every other date this
+            // catalogue stamps: a producer west of Greenwich building an exchange set late in the
+            // day would otherwise date it a day early.
             LocalDate issueDate = Optional.ofNullable(ident)
                     .map(DataSetIdentificationType::getDatasetReferenceDate)
-                    .orElseGet(LocalDate::now);
+                    .orElseGet(() -> LocalDate.now(ZoneOffset.UTC));
             // S-124 clause 12.2.2: the temporal extent "is only used when a NAVWARN have a
             // known expiry date and time. When used the values must align with the
             // publicationTime and cancellationDate attributes of the dataset NavwarnPreamble".
@@ -681,11 +776,27 @@ public final class S124ExchangeSetFactory {
             // expiry there is no temporal extent at all, so the publication time is only
             // carried alongside a cancellation date.
             LocalDateTime publicationTime = cancellationDate == null ? null : utc(preamble.getPublicationTime());
+            // S-124 clause 12.2.2 defines issueTime as the "Time of day at which the data was made
+            // available by the Data Producer", the same moment issueDate above gives the date of.
+            // The preamble's publicationTime is that moment, and it is the only record of it the
+            // factory holds; a dataset that does not state one leaves the attribute out, which its
+            // 0..1 multiplicity allows. Stamping a constant would assert a time never given.
+            //
+            // The two are only emitted together when they agree on the day. issueDate comes from
+            // the dataset's datasetReferenceDate, which the producer states in its own frame, while
+            // publicationTime is normalised to UTC - so near midnight the pair could otherwise name
+            // an instant up to a day from the real one. When they disagree the date is kept, being
+            // the dataset's own declared issue date, and the time is dropped rather than made to
+            // contradict it.
+            LocalDateTime publication = preamble == null ? null : utc(preamble.getPublicationTime());
+            LocalTime issueTime = publication != null && publication.toLocalDate().equals(issueDate)
+                    ? publication.toLocalTime()
+                    : null;
 
             catBuilder.addDatasetMetadata(builder -> s124Profile(builder
                     .setFileName("file:/" + df.fileName)
-                    .setDatasetID(cfg.datasetMrnPrefix + ":" + df.uuid)
-                    .setDescription(Optional.ofNullable(ident).map(DataSetIdentificationType::getDatasetAbstract).orElse(null))
+                    .setDatasetID(datasetId(preamble, df))
+                    .setDescription(datasetDescription(preamble))
                     .setCompressionFlag(false)
                     // No protectionScheme: S-124 data is unprotected (dataProtection=false) and
                     // the S-124 clause 12.2.2 profile has no protectionScheme attribute.
@@ -698,7 +809,7 @@ public final class S124ExchangeSetFactory {
                     // No editionNumber and no updateNumber: the S-124 clause 12.2.2 profile has
                     // no such attributes (see s124Profile).
                     .setIssueDate(issueDate)
-                    .setIssueTime(LocalTime.MIDNIGHT)
+                    .setIssueTime(issueTime)
                     .setBoundingBox(bbox)
                     .setTimeInstantBegin(publicationTime)
                     .setTimeInstantEnd(cancellationDate)
@@ -784,7 +895,7 @@ public final class S124ExchangeSetFactory {
     private static Geometry datasetExtent(DatasetFile df) {
         Geometry declared = GeometryS124Converter.envelopeToJts(df.dataset.getBoundedBy());
         if (declared != null) {
-            return withMinimumSpan(declared);
+            return quantized(withMinimumSpan(declared));
         }
         Geometry derived;
         try {
@@ -805,7 +916,7 @@ public final class S124ExchangeSetFactory {
                             + "metadata",
                     df.fileName));
         }
-        return withMinimumSpan(derived);
+        return quantized(withMinimumSpan(derived));
     }
 
     /**
@@ -825,6 +936,47 @@ public final class S124ExchangeSetFactory {
      * +/-180 range"): a box that would cross a pole or the antimeridian is shifted back inside
      * it instead of being widened past it.
      */
+    /**
+     * Quantises an extent to the coordinate precision of S-124 clause 8.2: "Values of latitude and
+     * longitude can be accurate up to 7 decimal places. Coordinate values should be coded as decimal
+     * numbers with 7 or fewer digits after the decimal."
+     * <p/>
+     * Without this the raw {@code double} reaches {@code gco:Decimal} through
+     * {@link BigDecimal#valueOf(double)}, which takes the shortest round-trip decimal expansion and
+     * applies no scale, so the IEEE-754 representation error is published verbatim - a catalogue
+     * built from the same envelope as a dataset's {@code gml:boundedBy} printed
+     * {@code 12.770000000000001} where the dataset itself printed {@code 12.7700000}. Rounding the
+     * {@code double} rather than the {@code BigDecimal} also drops the trailing zeros, which S-124
+     * clause 8.3 asks for: "Floating point attribute values must not contain non-significant
+     * trailing zeros exceeding the attribute's precision".
+     * <p/>
+     * This belongs here and not in {@code S100ExchangeSetUtils}, which builds bounding boxes for
+     * every S-100 product: the 7-digit limit is an S-124 rule, and a product whose datasets carry
+     * finer geometry would have its extent silently altered - and, since half-up rounding can move
+     * a bound inward, could end up declaring a box that no longer contains its own data.
+     * <p/>
+     * Half-up is safe for S-124 specifically, because the dataset's own coordinates are published at
+     * exactly this precision and rounding mode: {@code DoubleListAdapter} formats every GML
+     * coordinate with {@code %.7f}. Rounding is monotonic, so quantising the envelope of the raw
+     * coordinates gives precisely the envelope of the quantised coordinates - the declared box
+     * equals the extent of the geometry as encoded, rather than merely containing it. Padding is
+     * applied before this, and a rounding step of at most 5e-8 per bound cannot close the 1e-4 span
+     * {@link #MIN_EXTENT_SPAN_DEGREES} guarantees.
+     */
+    private static Geometry quantized(Geometry extent) {
+        Envelope envelope = extent.getEnvelopeInternal();
+        return new GeometryFactory(new PrecisionModel(), 4326)
+                .toGeometry(new Envelope(
+                        quantized(envelope.getMinX()), quantized(envelope.getMaxX()),
+                        quantized(envelope.getMinY()), quantized(envelope.getMaxY())));
+    }
+
+    private static double quantized(double coordinate) {
+        return BigDecimal.valueOf(coordinate)
+                .setScale(COORDINATE_SCALE, RoundingMode.HALF_UP)
+                .doubleValue();
+    }
+
     private static Geometry withMinimumSpan(Geometry extent) {
         Envelope envelope = extent.getEnvelopeInternal();
         if (envelope.getWidth() >= MIN_EXTENT_SPAN_DEGREES
@@ -907,13 +1059,120 @@ public final class S124ExchangeSetFactory {
     /**
      * The dataset's NavwarnPreamble, the feature S-124 clause 12.2.2 aligns the temporal extent
      * with, or {@code null} when the dataset carries none.
+     * <p/>
+     * A dataset carrying more than one is rejected rather than resolved by taking the first.
+     * S-124 clause 4 allows only one navigational warning per dataset, so there is no correct
+     * choice to make between several preambles - and picking one silently would publish a
+     * catalogue entry whose temporal extent describes one arbitrary warning as if it were the
+     * expiry of the whole dataset. {@code S124DatasetValidator} rejects the same dataset on the
+     * marshal path; this guard also covers a caller who assembled the catalogue by another route.
      */
     private static NavwarnPreamble preambleOf(Dataset dataset) {
-        return members(dataset).stream()
+        List<NavwarnPreamble> preambles = members(dataset).stream()
                 .filter(NavwarnPreamble.class::isInstance)
                 .map(NavwarnPreamble.class::cast)
+                .toList();
+        if (preambles.size() > 1) {
+            throw new ExchangeSetException(String.format(
+                    "The S-124 dataset carries %d NavwarnPreamble instances, but S-124 clause 4 "
+                            + "allows only one navigational warning per dataset, so its discovery "
+                            + "metadata has no single temporal extent to describe; package one "
+                            + "warning per dataset",
+                    preambles.size()));
+        }
+        return preambles.stream()
                 .findFirst()
                 .orElse(null);
+    }
+
+    /**
+     * The {@code datasetID} of a dataset's discovery metadata entry.
+     * <p/>
+     * S-124 clause 12.2.2, datasetID row: "The URN must be an MRN and if used match the value of
+     * interoperabilityIdentifier in the messageSeriesIdentifier". When the dataset states that
+     * identifier there is nothing to reconcile - it <em>is</em> the value the catalogue must carry,
+     * so it is used verbatim and the two artefacts agree by construction rather than by the
+     * producer's care. Only a dataset that states none falls back to the synthesised
+     * {@code <prefix>:<dataset id>}.
+     * <p/>
+     * When the dataset states an identifier that is <em>not</em> an MRN, the attribute is omitted
+     * rather than the build failed. S-124 clause 4.3.3 only says interoperabilityIdentifier
+     * "should follow the MRN concept", and clause 1.4.1 defines "should" as explicitly
+     * non-mandatory, so such a dataset is conformant; but no {@code datasetID} could then satisfy
+     * both halves of the clause 12.2.2 sentence at once - it would either not be an MRN or not
+     * match the dataset. Since the attribute is optional (0..1), leaving it out is the one
+     * conformant option, and it is the same policy the description and administrativeArea
+     * attributes already follow.
+     */
+    private String datasetId(NavwarnPreamble preamble, DatasetFile df) {
+        String interoperabilityIdentifier = Optional.ofNullable(preamble)
+                .map(NavwarnPreamble::getMessageSeriesIdentifier)
+                .map(MessageSeriesIdentifierType::getInteroperabilityIdentifier)
+                .filter(s -> !s.isBlank())
+                .orElse(null);
+        if (interoperabilityIdentifier != null) {
+            return MRN_PATTERN.matcher(interoperabilityIdentifier).matches()
+                    ? interoperabilityIdentifier
+                    : null;
+        }
+        // The synthesised form is the library's own construction, so an invalid one is a
+        // misconfiguration the producer can act on rather than a property of the dataset. The
+        // prefix is validated when it is set; the dataset's gml:id is not, and a gml:id may hold
+        // characters - it is an NCName, so non-ASCII letters are legal - that a URN may not.
+        String synthesised = cfg.datasetMrnPrefix + ":" + df.uuid;
+        if (!MRN_PATTERN.matcher(synthesised).matches()) {
+            throw new ExchangeSetException(String.format(
+                    "The dataset id \"%s\" yields datasetID \"%s\", which is not a Marine Resource "
+                            + "Name as S-124 clause 12.2.2 requires; give the dataset an id made of "
+                            + "URN characters, or set the interoperabilityIdentifier of its "
+                            + "messageSeriesIdentifier to the MRN the catalogue should carry",
+                    df.uuid, synthesised));
+        }
+        return synthesised;
+    }
+
+    /**
+     * The {@code description} of a dataset's discovery metadata entry.
+     * <p/>
+     * S-124 clause 12.2.2, description row: "If used, content of this attribute must match the
+     * content of the generalArea and locality attributes of the dataset NavwarnPreamble" - a
+     * stricter rule than the S-100 Part 17, clause 17-4.5, definition it profiles ("Short
+     * description giving the area or location covered by the dataset"). The value is therefore
+     * derived from the preamble rather than from the dataset abstract, which is a different field
+     * written for a different purpose and which typically opens with the issuing authority and the
+     * warning number - content that appears in neither {@code generalArea} nor {@code locality}.
+     * <p/>
+     * Both attributes are lists of localised {@code locationName}s, while {@code description} is a
+     * single unlocalised {@code CharacterString}, so one language has to be chosen: the catalogue's
+     * first configured locale, falling back to whichever name the dataset lists first. A dataset
+     * with neither attribute has nothing the rule can be satisfied from, and since the attribute is
+     * optional ("If used") it is then omitted - which conforms, where re-using the abstract would
+     * not.
+     */
+    private String datasetDescription(NavwarnPreamble preamble) {
+        if (preamble == null) {
+            return null;
+        }
+        List<String> parts = new ArrayList<>();
+        for (GeneralAreaType generalArea : preamble.getGeneralAreas()) {
+            addLocationName(parts, generalArea.getLocationNames());
+        }
+        for (LocalityType locality : preamble.getLocalities()) {
+            addLocationName(parts, locality.getLocationNames());
+        }
+        return parts.isEmpty() ? null : String.join(DESCRIPTION_SEPARATOR, parts);
+    }
+
+    /** Appends the localised name matching the catalogue's language, or the first one given. */
+    private void addLocationName(List<String> parts, List<LocationNameType> names) {
+        String language = cfg.locales.isEmpty() ? null : cfg.locales.get(0).getISO3Language();
+        names.stream()
+                .filter(n -> n.getText() != null && !n.getText().isBlank())
+                .filter(n -> language == null || language.equalsIgnoreCase(n.getLanguage()))
+                .findFirst()
+                .or(() -> names.stream().filter(n -> n.getText() != null && !n.getText().isBlank()).findFirst())
+                .map(LocationNameType::getText)
+                .ifPresent(parts::add);
     }
 
     private static List<AbstractGMLType> members(Dataset dataset) {
@@ -1054,6 +1313,7 @@ public final class S124ExchangeSetFactory {
         private String identifier;
         private String dataServerIdentifier;
         private String datasetMrnPrefix = DEFAULT_DATASET_MRN_PREFIX;
+        private boolean validateAgainstSchema = true;
         private S100ProductSpecification productSpecification = S124ProductSpecification.defaultSpec();
         private String description;
         private String comment;
@@ -1105,8 +1365,46 @@ public final class S124ExchangeSetFactory {
         public Builder signer(S124Signer signer) { this.signer = signer; return this; }
         public Builder identifier(String identifier) { this.identifier = identifier; return this; }
         public Builder dataServerIdentifier(String id) { this.dataServerIdentifier = id; return this; }
-        public Builder datasetMrnPrefix(String prefix) { this.datasetMrnPrefix = prefix; return this; }
+        /**
+         * The MRN the {@code datasetID} of each dataset is built from, as
+         * {@code <prefix>:<dataset id>}.
+         * <p/>
+         * Rejected here rather than at build time, because S-124 clause 12.2.2 requires the
+         * resulting {@code datasetID} to be an MRN and a prefix is the only part of it the caller
+         * controls; a bad one would otherwise surface as a signed, schema-invalid catalogue.
+         * The value is completed and re-checked in {@code datasetId} before it is emitted.
+         */
+        public Builder datasetMrnPrefix(String prefix) {
+            if (prefix == null || prefix.isBlank()) {
+                throw new IllegalArgumentException("datasetMrnPrefix must be set; S-124 clause "
+                        + "12.2.2 requires each datasetID to be a Marine Resource Name");
+            }
+            // The prefix is completed by ":<dataset id>", so it needs one namespace specific
+            // string fewer than a whole MRN does.
+            if (!MRN_PATTERN.matcher(prefix + ":x").matches()) {
+                throw new IllegalArgumentException(String.format(
+                        "datasetMrnPrefix \"%s\" does not yield a Marine Resource Name; S-124 clause "
+                                + "12.2.2 requires each datasetID to be an MRN, so the prefix must "
+                                + "read urn:mrn:<organisation>[:<namespace>] (\"%s\")",
+                        prefix, DEFAULT_DATASET_MRN_PREFIX));
+            }
+            this.datasetMrnPrefix = prefix;
+            return this;
+        }
         public Builder productSpecification(S100ProductSpecification spec) { this.productSpecification = spec; return this; }
+        /**
+         * Whether each dataset is validated against the S-124 GML application schema before
+         * being signed and packaged. On by default: S-124 clause 8.1.1 requires schema validity,
+         * and an invalid dataset is far cheaper to catch here than after it has been signed and
+         * distributed.
+         * <p/>
+         * Turn it off only to build an exchange set from datasets that are knowingly invalid,
+         * such as a fixture reproducing a consumer bug.
+         */
+        public Builder validateAgainstSchema(boolean validate) {
+            this.validateAgainstSchema = validate;
+            return this;
+        }
         public Builder description(String description) { this.description = description; return this; }
         public Builder comment(String comment) { this.comment = comment; return this; }
         public Builder datasetComment(String comment) { this.datasetComment = comment; return this; }

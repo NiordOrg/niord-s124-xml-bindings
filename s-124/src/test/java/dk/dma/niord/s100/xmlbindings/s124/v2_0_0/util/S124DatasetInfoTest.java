@@ -166,9 +166,51 @@ class S124DatasetInfoTest {
         dataset.setBoundedBy(boundedBy);
         dataset.setMembers(of.createDatasetMembers());
 
-        String xml = S124Utils.marshalS124(dataset);
+        // Validation off: the subject is the identification block S124DatasetInfo produces, and
+        // the fixture carries no NavwarnPreamble to make it a conformant warning.
+        String xml = S124Utils.marshalS124(dataset, true, false);
         assertThatCode(() -> S124XsdValidator.validate(xml))
                 .as("XSD validation errors in:%n%s", xml)
                 .doesNotThrowAnyException();
+    }
+
+    /**
+     * Without a way to project the carrier onto the type a dataset actually holds, the Table 10b-4
+     * checks in this class guarded nothing - hand-populating DataSetIdentificationType was the only
+     * path, and it bypasses every one of them.
+     */
+    @Test
+    void applyToWritesTheValidatedFieldsOntoTheDataset() {
+        Dataset dataset = new ObjectFactory().createDataset();
+        dataset.setId("DK.S124.apply");
+        dataset.setDatasetIdentificationInformation(new DataSetIdentificationTypeImpl());
+
+        S124DatasetInfo info = new S124DatasetInfo("DK.S124.apply", "DK00");
+        info.setTitle("Drogden Channel. Light buoy unlit.");
+        info.applyTo(dataset);
+
+        var ident = dataset.getDatasetIdentificationInformation();
+        assertThat(ident.getEncodingSpecification()).isEqualTo("S-100 Part 10b");
+        assertThat(ident.getProductIdentifier()).isEqualTo("S-124");
+        assertThat(ident.getProductEdition()).isEqualTo("2.0.0");
+        assertThat(ident.getDatasetTitle()).isEqualTo("Drogden Channel. Light buoy unlit.");
+        assertThat(ident.getDatasetFileIdentifier()).isEqualTo("124DK00DKS124apply.GML");
+        assertThat(ident.getDatasetTopicCategories()).hasSize(1);
+        assertThat(ident.getDatasetPurpose()).isEqualTo(DatasetPurposeType.BASE);
+        // The pairing this class exists to enforce now actually reaches the dataset.
+        assertThat(ident.getApplicationProfile()).isEqualTo(S124DatasetInfo.BASE_APPLICATION_PROFILE);
+    }
+
+    /** Applying twice must not accumulate topic categories. */
+    @Test
+    void applyToIsIdempotent() {
+        Dataset dataset = new ObjectFactory().createDataset();
+        dataset.setDatasetIdentificationInformation(new DataSetIdentificationTypeImpl());
+        S124DatasetInfo info = new S124DatasetInfo("DK.S124.twice", "DK00");
+
+        info.applyTo(dataset);
+        info.applyTo(dataset);
+
+        assertThat(dataset.getDatasetIdentificationInformation().getDatasetTopicCategories()).hasSize(1);
     }
 }

@@ -59,7 +59,9 @@ class S124GeometryXsdValidationTest {
         List<S100SpatialAttributeType> spatial = GeometryS124Converter
                 .geometryToS124PointCurveSurfaceGeometry(geometries, () -> "DK.G." + sequence.incrementAndGet());
 
-        String xml = S124Utils.marshalS124(dataset(spatial));
+        // Validation off: the subject is whether converter geometry marshals to schema-valid XML,
+        // and the fixture carries geometry without the NavwarnPreamble a real warning would have.
+        String xml = S124Utils.marshalS124(dataset(spatial), true, false);
 
         assertThatCode(() -> S124XsdValidator.validate(xml))
                 .as("marshalled dataset should be schema-valid, was:%n%s", xml)
@@ -76,7 +78,7 @@ class S124GeometryXsdValidationTest {
         ident.setEncodingSpecificationEdition("1.0");
         ident.setProductIdentifier("S-124");
         ident.setProductEdition("2.0.0");
-        ident.setApplicationProfile("NavigationalWarning");
+        ident.setApplicationProfile(S124DatasetInfo.BASE_APPLICATION_PROFILE);
         ident.setDatasetFileIdentifier("DK.S124.test");
         ident.setDatasetTitle("Test");
         ident.setDatasetReferenceDate(LocalDate.of(2026, 1, 15));

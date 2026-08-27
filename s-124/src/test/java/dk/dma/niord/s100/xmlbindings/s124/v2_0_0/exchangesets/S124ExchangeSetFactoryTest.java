@@ -1,6 +1,7 @@
 package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
@@ -16,12 +17,14 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -72,10 +75,25 @@ import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.BoundingShapeTy
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.EnvelopeTypeImpl;
 import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.impl.PosImpl;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
+import dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ReferenceType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.GeneralAreaType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.InformationType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.LocalityType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.LocationNameType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.MessageSeriesIdentifierType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPart;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnTypeGeneralLabel;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnTypeGeneralType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.NavwarnPreamble;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.ObjectFactory;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.WarningInformationType;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.WarningTypeLabel;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.WarningTypeType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.DatasetPurposeType;
+import dk.dma.niord.s100.xmlbindings.s100.gml.base._5_0.MDTopicCategoryCode;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124ConformanceException;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124DatasetInfo;
 import jakarta.xml.bind.JAXBContext;
 
 class S124ExchangeSetFactoryTest {
@@ -977,6 +995,20 @@ class S124ExchangeSetFactoryTest {
                 .getS100DatasetDiscoveryMetadatas().get(0).getBoundingBox();
     }
 
+    /** A minimal exchange set carrying a dataset that is knowingly not schema-valid. */
+    private static byte[] exchangeSetOfUnvalidated(Dataset dataset) {
+        return S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .validateAgainstSchema(false)
+                .build()
+                .toBytes();
+    }
+
     /** A minimal exchange set carrying the given dataset. */
     private static byte[] exchangeSetOf(Dataset dataset) {
         return S124ExchangeSetFactory.builder()
@@ -1130,6 +1162,10 @@ class S124ExchangeSetFactoryTest {
      * Without a datasetFileIdentifier there is nothing to keep the file name consistent with,
      * so it is derived from the dataset identifier - reduced to the alphanumeric unique code
      * clause 17-4.3 allows.
+     * <p/>
+     * Schema validation is switched off for this one case: S-100 Part 10b Table 10b-4 makes
+     * datasetFileIdentifier mandatory, so a dataset omitting it is not schema-valid and the
+     * derivation this test covers only ever applies to such a dataset.
      */
     @Test
     void derivesAlphanumericFileNamesForDatasetsWithoutAFileIdentifier() throws Exception {
@@ -1143,6 +1179,7 @@ class S124ExchangeSetFactoryTest {
                 .certificatePem(testCertPem)
                 .signer((alg, payload) -> new byte[64])
                 .phone("+4572196000")
+                .validateAgainstSchema(false)
                 .build()
                 .toBytes();
 
@@ -1616,6 +1653,21 @@ class S124ExchangeSetFactoryTest {
                 .getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements();
         NavwarnPart part = of.createNavwarnPart();
         part.setId("NW." + (members.size() + 1));
+        // warningInformation and header are both mandatory in the S-124 schema, so even a part
+        // that exists only to carry geometry has to state them.
+        InformationType information = of.createInformationType();
+        information.setLanguage("eng");
+        information.setText("Test warning information");
+        WarningInformationType warningInformation = of.createWarningInformationType();
+        warningInformation.getInformations().add(information);
+        part.setWarningInformation(warningInformation);
+        ReferenceType header = new dk.dma.niord.s100.xmlbindings.s100.gml.profiles._5_0.ObjectFactory()
+                .createReferenceType();
+        header.setHref("#PR.1");
+        // S-100 Part 10b clause 10b-9: an association must carry role or arcrole, so that a reader
+        // can tell it is an association role rather than an attribute (clause 10b-10 item 3).
+        header.setRole("http://www.iho.int/S124/gml/2.0/roles/header");
+        part.setHeader(header);
         for (S100SpatialAttributeType property :
                 GeometryS124Converter.geometryToS124PointCurveSurfaceGeometry(geometry)) {
             NavwarnPart.Geometry memberGeometry = of.createNavwarnPartGeometry();
@@ -1631,14 +1683,63 @@ class S124ExchangeSetFactoryTest {
         members.add(part);
     }
 
-    /** Adds the NavwarnPreamble S-124 clause 12.2.2 aligns the temporal extent with. */
+    /**
+     * Sets the times S-124 clause 12.2.2 aligns the temporal extent with on the dataset's preamble.
+     * <p/>
+     * S-124 clause 4 allows exactly one NavwarnPreamble per dataset, so this configures the one
+     * {@link #newDataset(String)} already supplied rather than adding another.
+     */
     private static void addPreamble(Dataset dataset, OffsetDateTime publicationTime,
             OffsetDateTime cancellationDate) {
-        NavwarnPreamble preamble = new ObjectFactory().createNavwarnPreamble();
-        preamble.setId("PR.1");
+        NavwarnPreamble preamble = preambleOf(dataset);
         preamble.setPublicationTime(publicationTime);
         preamble.setCancellationDate(cancellationDate);
-        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().add(preamble);
+    }
+
+    /** The dataset's single NavwarnPreamble. */
+    private static NavwarnPreamble preambleOf(Dataset dataset) {
+        return membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements().stream()
+                .filter(NavwarnPreamble.class::isInstance)
+                .map(NavwarnPreamble.class::cast)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    /** A conformant NavwarnPreamble, as every S-124 dataset must carry exactly one. */
+    private static NavwarnPreamble newPreamble(String id) {
+        ObjectFactory of = new ObjectFactory();
+        NavwarnPreamble preamble = of.createNavwarnPreamble();
+        preamble.setId(id);
+        preamble.setPublicationTime(OffsetDateTime.parse("2026-01-15T06:00:00Z"));
+        // generalArea, messageSeriesIdentifier, intService and navwarnTypeGeneral are all
+        // mandatory in the S-124 schema.
+        LocationNameType locationName = of.createLocationNameType();
+        locationName.setLanguage("eng");
+        locationName.setText("Test Area");
+        GeneralAreaType generalArea = of.createGeneralAreaType();
+        generalArea.getLocationNames().add(locationName);
+        preamble.getGeneralAreas().add(generalArea);
+        WarningTypeType warningType = of.createWarningTypeType();
+        warningType.setValue(WarningTypeLabel.COASTAL_NAVIGATIONAL_WARNING);
+        MessageSeriesIdentifierType series = of.createMessageSeriesIdentifierType();
+        // An S-62 producer code, not the agency's name (S-124 clause 4.3.3).
+        series.setAgencyResponsibleForProduction("DK00");
+        series.setNameOfSeries("Test Nav. Warn.");
+        series.setWarningNumber(1);
+        series.setYear(2026);
+        series.setWarningType(warningType);
+        preamble.setMessageSeriesIdentifier(series);
+        preamble.setIntService(true);
+        NavwarnTypeGeneralType typeGeneral = of.createNavwarnTypeGeneralType();
+        typeGeneral.setValue(NavwarnTypeGeneralLabel.OTHER_HAZARDS);
+        preamble.setNavwarnTypeGeneral(typeGeneral);
+        return preamble;
+    }
+
+    /** A second preamble - the one thing S-124 clause 4 forbids. */
+    private static void addSecondPreamble(Dataset dataset) {
+        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements()
+                .add(newPreamble("PR.2"));
     }
 
     private static Dataset.Members membersOf(Dataset dataset) {
@@ -1682,6 +1783,9 @@ class S124ExchangeSetFactoryTest {
         ident.setEncodingSpecificationEdition("1.0");
         ident.setProductIdentifier("S-124");
         ident.setProductEdition("2.0.0");
+        // Mandatory in the S-124 GML schema and fixed by S-100 Part 10b Table 10b-4 to "1"
+        // for a base dataset, the purpose set below.
+        ident.setApplicationProfile(S124DatasetInfo.BASE_APPLICATION_PROFILE);
         // S-100 Part 10b Table 10b-4 defines the dataset file identifier as the name of the
         // packaged file, which S-100 Part 17, clause 17-4.3, builds from the product code,
         // the producer code and an alphanumeric unique code.
@@ -1690,6 +1794,9 @@ class S124ExchangeSetFactoryTest {
         ident.setDatasetReferenceDate(LocalDate.of(2026, 1, 15));
         ident.setDatasetLanguage("eng");
         ident.setDatasetAbstract("Synthetic dataset used for unit tests");
+        // datasetTopicCategory and datasetPurpose are both mandatory in the S-124 GML schema.
+        ident.getDatasetTopicCategories().add(MDTopicCategoryCode.OCEANS);
+        ident.setDatasetPurpose(DatasetPurposeType.BASE);
         ident.setUpdateNumber(BigInteger.ZERO);
         dataset.setDatasetIdentificationInformation(ident);
 
@@ -1705,6 +1812,10 @@ class S124ExchangeSetFactoryTest {
         BoundingShapeTypeImpl bbox = new BoundingShapeTypeImpl();
         bbox.setEnvelope(env);
         dataset.setBoundedBy(bbox);
+        // The S-124 schema declares <members> mandatory, and clause 4 requires exactly one
+        // NavwarnPreamble in it.
+        membersOf(dataset).getNavwarnPartsAndNavwarnAreaAffectedsAndTextPlacements()
+                .add(newPreamble("PR.1"));
 
         return dataset;
     }
@@ -1724,5 +1835,402 @@ class S124ExchangeSetFactoryTest {
             }
         }
         return out;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Discovery metadata derived from the dataset (S-124 clause 12.2.2)
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * S-124 clause 12.2.2, description row: "If used, content of this attribute must match the
+     * content of the generalArea and locality attributes of the dataset NavwarnPreamble" - not the
+     * dataset abstract, which is written for a different purpose and typically opens with the
+     * issuing authority and the warning number.
+     */
+    @Test
+    void descriptionComesFromThePreamblesGeneralAreaAndLocality() throws Exception {
+        Dataset dataset = newDataset("DK.S124.description");
+        dataset.getDatasetIdentificationInformation()
+                .setDatasetAbstract("Danish navigational warning DK-NW-011-26 issued by the DMA.");
+        namePreamble(dataset, "The Sound", "Drogden Channel");
+
+        S100DatasetDiscoveryMetadata entry = firstEntry(exchangeSetOf(dataset));
+
+        assertThat(entry.getDescription().getCharacterString().getValue())
+                .isEqualTo("The Sound, Drogden Channel");
+    }
+
+    /** The localised name matching the catalogue's language wins; the others are ignored. */
+    @Test
+    void descriptionUsesTheCatalogueLanguage() throws Exception {
+        Dataset dataset = newDataset("DK.S124.descriptionlang");
+        NavwarnPreamble preamble = namePreamble(dataset, "The Sound", "Drogden Channel");
+        preamble.getGeneralAreas().get(0).getLocationNames().add(locationName("dan", "Sundet"));
+        preamble.getLocalities().get(0).getLocationNames().add(locationName("dan", "Drogden"));
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .locales(List.of(Locale.forLanguageTag("da")))
+                .build()
+                .toBytes();
+
+        assertThat(firstEntry(zipBytes).getDescription().getCharacterString().getValue())
+                .isEqualTo("Sundet, Drogden");
+    }
+
+    /**
+     * The attribute is optional ("If used"), so a dataset whose preamble names no place omits it.
+     * Falling back to the abstract would break the very rule the derivation exists to satisfy.
+     */
+    @Test
+    void descriptionIsOmittedWhenThePreambleNamesNoPlace() throws Exception {
+        // generalArea is mandatory and its locationName text is an unrestricted xs:string
+        // (124_2.0.0.xsd textType), so naming no place means an empty or whitespace-only name -
+        // both of which are schema-valid, hence full validation below.
+        for (String blank : List.of("", "   ")) {
+            Dataset dataset = newDataset("DK.S124.nodescription");
+            dataset.getDatasetIdentificationInformation()
+                    .setDatasetAbstract("An abstract, but no place");
+            preambleOf(dataset).getGeneralAreas().get(0).getLocationNames().get(0).setText(blank);
+            preambleOf(dataset).getLocalities().clear();
+
+            assertThat(firstEntry(exchangeSetOf(dataset)).getDescription())
+                    .as("description for a location name of \"%s\"", blank)
+                    .isNull();
+        }
+    }
+
+    /**
+     * S-124 clause 12.2.2 defines issueTime as the "Time of day at which the data was made
+     * available by the Data Producer", which is the preamble's publicationTime - converted to UTC,
+     * not taken at face value.
+     */
+    @Test
+    void issueTimeComesFromThePreamblesPublicationTime() throws Exception {
+        Dataset dataset = newDataset("DK.S124.issuetime");
+        dataset.getDatasetIdentificationInformation().setDatasetReferenceDate(LocalDate.of(2026, 8, 20));
+        // 08:45+02:00 is 06:45 UTC, the form the catalogue carries.
+        addPreamble(dataset, OffsetDateTime.of(2026, 8, 20, 8, 45, 0, 0, ZoneOffset.ofHours(2)), null);
+
+        assertThat(firstEntry(exchangeSetOf(dataset)).getIssueTime()).isEqualTo(LocalTime.of(6, 45));
+    }
+
+    /** With no publication time there is nothing to state, and the attribute is optional. */
+    @Test
+    void issueTimeIsOmittedWhenTheDatasetStatesNoPublicationTime() throws Exception {
+        Dataset dataset = newDataset("DK.S124.noissuetime");
+        // publicationTime is mandatory in the schema, so a dataset without one is not schema-valid;
+        // the catalogue must still describe it rather than invent a time.
+        preambleOf(dataset).setPublicationTime(null);
+
+        assertThat(firstEntry(exchangeSetOfUnvalidated(dataset)).getIssueTime()).isNull();
+    }
+
+    /**
+     * issueDate and issueTime are two halves of one instant. issueDate comes from the dataset's own
+     * datasetReferenceDate while the publication time is normalised to UTC, so near midnight the two
+     * can fall on different days; the time is then dropped rather than made to contradict the date.
+     */
+    @Test
+    void issueTimeIsOmittedWhenThePublicationTimeFallsOnAnotherDay() throws Exception {
+        Dataset dataset = newDataset("DK.S124.midnight");
+        dataset.getDatasetIdentificationInformation().setDatasetReferenceDate(LocalDate.of(2026, 6, 10));
+        // 2026-06-10T01:00+02:00 is 2026-06-09T23:00Z - the day before the declared issue date.
+        addPreamble(dataset, OffsetDateTime.of(2026, 6, 10, 1, 0, 0, 0, ZoneOffset.ofHours(2)), null);
+
+        S100DatasetDiscoveryMetadata entry = firstEntry(exchangeSetOf(dataset));
+        assertThat(entry.getIssueDate()).isEqualTo(LocalDate.of(2026, 6, 10));
+        assertThat(entry.getIssueTime()).isNull();
+    }
+
+    /**
+     * S-124 clause 6.2.2: "All instances of time in datasets conforming to S-124 must be expressed
+     * in UTC". A producer working in local time has its publicationTime converted, not rejected -
+     * the offset makes the instant unambiguous, so there is nothing for the producer to decide.
+     */
+    @Test
+    void datasetTimesAreMarshalledInUtc() throws Exception {
+        Dataset dataset = newDataset("DK.S124.utctimes");
+        addPreamble(dataset, OffsetDateTime.of(2026, 8, 20, 8, 45, 0, 0, ZoneOffset.ofHours(2)), null);
+
+        String gml = new String(unzip(exchangeSetOf(dataset))
+                .get("S100_ROOT/S-124/DATASET_FILES/124DK00DKS124utctimes.GML"), StandardCharsets.UTF_8);
+
+        assertThat(gml).as("dataset GML:%n%s", gml)
+                .contains("2026-08-20T06:45:00Z")
+                .doesNotContain("+02:00");
+    }
+
+    /**
+     * S-124 clause 12.2.2, datasetID row: "The URN must be an MRN and if used match the value of
+     * interoperabilityIdentifier in the messageSeriesIdentifier". Using it verbatim makes the two
+     * artefacts agree by construction rather than by the producer's care.
+     */
+    @Test
+    void datasetIdIsTheInteroperabilityIdentifierWhenTheDatasetStatesOne() throws Exception {
+        Dataset dataset = newDataset("DK.S124.interop");
+        NavwarnPreamble preamble = namePreamble(dataset, "The Sound", null);
+        preamble.getMessageSeriesIdentifier().setInteroperabilityIdentifier("urn:mrn:iho:s124:dk:nw-011-26");
+
+        assertThat(firstEntry(exchangeSetOf(dataset)).getDatasetID())
+                .isEqualTo("urn:mrn:iho:s124:dk:nw-011-26");
+    }
+
+    @Test
+    void datasetIdFallsBackToThePrefixWhenTheDatasetStatesNone() throws Exception {
+        assertThat(firstEntry(exchangeSetOf(newDataset("DK.S124.nointerop"))).getDatasetID())
+                .isEqualTo("urn:mrn:iho:s124:DK.S124.nointerop");
+    }
+
+    /**
+     * When the dataset states an identifier that is not an MRN, no datasetID can be both an MRN and
+     * a match for it, so the optional attribute is omitted. S-124 clause 4.3.3 only says
+     * interoperabilityIdentifier "should" follow the MRN concept, so such a dataset is conformant
+     * and must not fail the build.
+     */
+    @Test
+    void datasetIdIsOmittedWhenTheInteroperabilityIdentifierIsNotAnMrn() throws Exception {
+        Dataset dataset = newDataset("DK.S124.badinterop");
+        NavwarnPreamble preamble = namePreamble(dataset, "The Sound", null);
+        preamble.getMessageSeriesIdentifier().setInteroperabilityIdentifier("DK-NW-011-26");
+
+        assertThat(firstEntry(exchangeSetOf(dataset)).getDatasetID()).isNull();
+    }
+
+    /**
+     * The catalogue schema types datasetID as MRNType, whose pattern "urn:mrn:.+" is case-sensitive,
+     * so an upper-case scheme must not be accepted as an MRN - it would produce a signed but
+     * schema-invalid CATALOG.XML.
+     */
+    @Test
+    void anUpperCaseUrnSchemeIsNotTreatedAsAnMrn() throws Exception {
+        Dataset dataset = newDataset("DK.S124.upperinterop");
+        NavwarnPreamble preamble = namePreamble(dataset, "The Sound", null);
+        preamble.getMessageSeriesIdentifier().setInteroperabilityIdentifier("URN:MRN:iho:s124:dk:1");
+
+        assertThat(firstEntry(exchangeSetOf(dataset)).getDatasetID()).isNull();
+    }
+
+    /** A synthesised datasetID that cannot be an MRN is the caller's to fix, so it is reported. */
+    @Test
+    void rejectsADatasetIdThatCannotFormAnMrn() {
+        Dataset dataset = newDataset("DK.S124.badid");
+        dataset.setId("DK.S124.\u00d81");
+
+        assertThatThrownBy(() -> exchangeSetOf(dataset))
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("Marine Resource Name");
+    }
+
+    @Test
+    void rejectsADatasetMrnPrefixThatIsNotAnMrn() {
+        assertThatThrownBy(() -> S124ExchangeSetFactory.builder().datasetMrnPrefix("s124"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Marine Resource Name");
+        assertThatThrownBy(() -> S124ExchangeSetFactory.builder().datasetMrnPrefix(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * An administrative area is a subdivision of a country, not a synonym for one. With none
+     * configured the element is simply left out, as the dataset-level producing agency already did.
+     */
+    @Test
+    void administrativeAreaIsNotDefaultedToTheCountry() throws Exception {
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.adminarea")))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .country("Denmark")
+                .build()
+                .toBytes();
+
+        String catalogXml = new String(unzip(zipBytes).get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        assertThat(catalogXml).as("CATALOG.XML:%n%s", catalogXml).doesNotContain("administrativeArea");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Fail-fast on non-conformant datasets
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * S-124 clause 8.1.1 requires schema validity of every dataset. The check runs before the
+     * dataset is signed, so an invalid one never ships vouched for.
+     */
+    @Test
+    void rejectsADatasetThatIsNotSchemaValidBeforeSigningIt() {
+        Dataset dataset = newDataset("DK.S124.invalid");
+        dataset.getDatasetIdentificationInformation().setApplicationProfile(null);
+
+        assertThatThrownBy(() -> exchangeSetOf(dataset))
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("not valid against its XML schema")
+                .hasMessageContaining("applicationProfile");
+    }
+
+    /** The same dataset builds when the caller knowingly opts out. */
+    @Test
+    void schemaValidationCanBeTurnedOff() {
+        Dataset dataset = newDataset("DK.S124.invalidallowed");
+        dataset.getDatasetIdentificationInformation().setApplicationProfile(null);
+
+        assertThatCode(() -> S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> new byte[64])
+                .phone("+4572196000")
+                .validateAgainstSchema(false)
+                .build()
+                .toBytes()).doesNotThrowAnyException();
+    }
+
+    /**
+     * S-124 clause 4 allows one navigational warning per dataset. Two preambles leave the entry's
+     * temporal extent undefined, so the dataset is rejected rather than resolved by taking the
+     * first - which would silently drop the second warning's dates.
+     */
+    @Test
+    void rejectsADatasetCarryingMoreThanOneNavwarnPreamble() {
+        Dataset dataset = newDataset("DK.S124.twopreambles");
+        addSecondPreamble(dataset);
+
+        assertThatThrownBy(() -> exchangeSetOf(dataset))
+                .isInstanceOf(S124ConformanceException.class)
+                .hasMessageContaining("2 NavwarnPreamble instances");
+    }
+
+    /** The conformance failure names the dataset and the clause, so it is not wrapped away. */
+    @Test
+    void conformanceFailuresAreNotWrappedInAGenericBuildFailure() {
+        Dataset dataset = newDataset("DK.S124.agencyname");
+        NavwarnPreamble preamble = namePreamble(dataset, "The Sound", null);
+        preamble.getMessageSeriesIdentifier().setAgencyResponsibleForProduction("Danish Maritime Authority");
+
+        assertThatThrownBy(() -> exchangeSetOf(dataset))
+                .isInstanceOf(S124ConformanceException.class)
+                .hasMessageContaining("S-124 clause 4.3.3");
+    }
+
+    /**
+     * S-100 Part 10b, clause 10b-8.2.4, requires "the code and label of the listed value". The code
+     * is a pure function of the label, so it is filled in rather than demanded of the producer.
+     */
+    @Test
+    void fillsInMissingEnumerationCodesBeforeMarshalling() throws Exception {
+        Dataset dataset = newDataset("DK.S124.codes");
+        NavwarnPreamble preamble = namePreamble(dataset, "The Sound", null);
+        preamble.getNavwarnTypeGeneral().setCode(null);
+        preamble.getMessageSeriesIdentifier().getWarningType().setCode(null);
+
+        String gml = new String(unzip(exchangeSetOf(dataset))
+                .get("S100_ROOT/S-124/DATASET_FILES/124DK00DKS124codes.GML"), StandardCharsets.UTF_8);
+
+        assertThat(gml).as("dataset GML:%n%s", gml)
+                // Other Hazards = 5, Coastal Navigational Warning = 2 (S-124 clause 4.3.1, Figure 4-4)
+                .contains("navwarnTypeGeneral code=\"5\"")
+                .contains("warningType code=\"2\"");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Bounding box precision (S-124 clause 8.2)
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * S-124 clause 8.2: coordinates are "coded as decimal numbers with 7 or fewer digits after the
+     * decimal". Passing a raw double through BigDecimal.valueOf leaks the IEEE-754 representation
+     * error into the XML, so the catalogue disagreed with the very GML it describes.
+     */
+    @Test
+    void boundingBoxCoordinatesAreQuantisedToSevenDecimals() throws Exception {
+        Dataset dataset = newDataset("DK.S124.precision");
+        setEnvelope(dataset, 55.4967, 12.67, 55.5967, 12.77);
+
+        S100GeographicBoundingBoxType box = firstEntry(exchangeSetOf(dataset)).getBoundingBox();
+
+        // Quantising the double rather than the BigDecimal also drops the non-significant trailing
+        // zeros S-124 clause 8.3 forbids; clause 8.2 asks for "7 or fewer" digits, not exactly 7.
+        assertThat(box.getWestBoundLongitude().getDecimal().toPlainString()).isEqualTo("12.67");
+        assertThat(box.getEastBoundLongitude().getDecimal().toPlainString()).isEqualTo("12.77");
+        assertThat(box.getSouthBoundLatitude().getDecimal().toPlainString()).isEqualTo("55.4967");
+        assertThat(box.getNorthBoundLatitude().getDecimal().toPlainString()).isEqualTo("55.5967");
+    }
+
+    /**
+     * The catalogue bounding box and the geometry the dataset actually publishes must denote the
+     * same numbers. Both are quantised to 7 decimals half-up - the catalogue here, every GML
+     * coordinate by DoubleListAdapter's {@code %.7f} - and rounding is monotonic, so the declared
+     * box is exactly the extent of the encoded geometry rather than merely containing it.
+     */
+    @Test
+    void boundingBoxAgreesWithTheDatasetEnvelopeItDescribes() throws Exception {
+        Dataset dataset = newDataset("DK.S124.agreement");
+        setEnvelope(dataset, 54.82, 14.8, 55.045, 15.1);
+
+        byte[] zipBytes = exchangeSetOf(dataset);
+        String catalogXml = new String(unzip(zipBytes).get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        String gml = new String(unzip(zipBytes)
+                .get("S100_ROOT/S-124/DATASET_FILES/124DK00DKS124agreement.GML"), StandardCharsets.UTF_8);
+
+        assertThat(catalogXml).as("CATALOG.XML:%n%s", catalogXml)
+                .contains(">14.8<", ">15.1<", ">54.82<", ">55.045<")
+                .doesNotContain("14.799999999999999")
+                .doesNotContain("15.100000000000001")
+                .doesNotContain("55.044999999999995");
+        assertThat(gml).contains("54.8200000 14.8000000", "55.0450000 15.1000000");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Helpers for the tests above
+    // ---------------------------------------------------------------------------------------
+
+    /** The catalogue's first dataset discovery metadata entry. */
+    private static S100DatasetDiscoveryMetadata firstEntry(byte[] zipBytes) throws Exception {
+        return catalogueOf(zipBytes).getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+    }
+
+    /** Gives the dataset a preamble naming a general area and, optionally, a locality. */
+    private static NavwarnPreamble namePreamble(Dataset dataset, String generalArea, String locality) {
+        addPreamble(dataset, OffsetDateTime.of(2026, 8, 20, 6, 45, 0, 0, ZoneOffset.UTC), null);
+        NavwarnPreamble preamble = preambleOf(dataset);
+        preamble.getGeneralAreas().get(0).getLocationNames().clear();
+        preamble.getGeneralAreas().get(0).getLocationNames().add(locationName("eng", generalArea));
+        if (locality != null) {
+            LocalityType localityType = new ObjectFactory().createLocalityType();
+            localityType.getLocationNames().add(locationName("eng", locality));
+            preamble.getLocalities().add(localityType);
+        }
+        return preamble;
+    }
+
+    private static LocationNameType locationName(String language, String text) {
+        LocationNameType name = new ObjectFactory().createLocationNameType();
+        name.setLanguage(language);
+        name.setText(text);
+        return name;
+    }
+
+    /** Replaces the dataset's declared envelope, in GML lat,lon order. */
+    private static void setEnvelope(Dataset dataset, double south, double west, double north, double east) {
+        PosImpl lower = new PosImpl();
+        lower.setValue(new Double[] { south, west });
+        PosImpl upper = new PosImpl();
+        upper.setValue(new Double[] { north, east });
+        EnvelopeTypeImpl env = new EnvelopeTypeImpl();
+        env.setSrsName("EPSG:4326");
+        env.setLowerCorner(lower);
+        env.setUpperCorner(upper);
+        BoundingShapeTypeImpl bbox = new BoundingShapeTypeImpl();
+        bbox.setEnvelope(env);
+        dataset.setBoundedBy(bbox);
     }
 }

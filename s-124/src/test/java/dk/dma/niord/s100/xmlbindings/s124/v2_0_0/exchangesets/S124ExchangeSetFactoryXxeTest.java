@@ -56,51 +56,22 @@ class S124ExchangeSetFactoryXxeTest {
 
     @Test
     void anArchiveCarryingAnExternalGeneralEntityIsRefusedAndTheFileIsNotRead() {
-        assertNothingLeaked(read(XxePayloads.externalGeneralEntity(CATALOGUE_ROOT, this.secretFileUri), "&leak;"));
+        XxePayloads.assertNothingLeaked(read(XxePayloads.externalGeneralEntity(CATALOGUE_ROOT, this.secretFileUri), "&leak;"));
     }
 
     @Test
     void anArchiveCarryingAnExternalParameterEntityIsRefusedAndTheFragmentIsNotFetched() {
-        assertNothingLeaked(read(XxePayloads.externalParameterEntity(CATALOGUE_ROOT, this.secretDtdUri), "&smuggled;"));
+        XxePayloads.assertNothingLeaked(read(XxePayloads.externalParameterEntity(CATALOGUE_ROOT, this.secretDtdUri), "&smuggled;"));
     }
 
     @Test
     void anArchiveCarryingABillionLaughsCatalogueIsRefusedAtTheDeclaration() {
-        assertRefusedAtTheDoctype(read(XxePayloads.billionLaughs(CATALOGUE_ROOT), "&lol9;"));
+        XxePayloads.assertRefusedAtTheDoctype(read(XxePayloads.billionLaughs(CATALOGUE_ROOT), "&lol9;"));
     }
 
     @Test
     void anArchiveCarryingABareDoctypeIsRefused() {
-        assertRefusedAtTheDoctype(read(XxePayloads.bareDoctype(CATALOGUE_ROOT), PUBLISHED_FILE));
-    }
-
-    /** Everything the caller can see - the keys it got back, or the failure - free of both canaries. */
-    private static void assertNothingLeaked(Outcome outcome) {
-        assertSoftly(softly -> {
-            softly.assertThat(outcome.text())
-                    .as("the file's content must not reach the caller")
-                    .doesNotContain(XxePayloads.FILE_CANARY);
-            softly.assertThat(outcome.text())
-                    .as("the DTD fragment's content must not reach the caller")
-                    .doesNotContain(XxePayloads.PARAMETER_CANARY);
-            softly.assertThat(outcome.threw())
-                    .as("the hostile archive must be refused, it returned: %s", outcome.text())
-                    .isTrue();
-            softly.assertThat(outcome.text())
-                    .as("the refusal must name the DOCTYPE")
-                    .contains(XxePayloads.REFUSAL);
-        });
-    }
-
-    private static void assertRefusedAtTheDoctype(Outcome outcome) {
-        assertSoftly(softly -> {
-            softly.assertThat(outcome.threw())
-                    .as("the hostile archive must be refused, it returned: %s", outcome.text())
-                    .isTrue();
-            softly.assertThat(outcome.text())
-                    .as("the refusal must name the DOCTYPE")
-                    .contains(XxePayloads.REFUSAL);
-        });
+        XxePayloads.assertRefusedAtTheDoctype(read(XxePayloads.bareDoctype(CATALOGUE_ROOT), PUBLISHED_FILE));
     }
 
     /** Reads the archive and reports the file names it published, which is where a leak would show. */

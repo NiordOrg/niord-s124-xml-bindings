@@ -1,7 +1,6 @@
 package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 
 import javax.xml.XMLConstants;
 import javax.xml.validation.Schema;
@@ -38,13 +37,11 @@ public final class S124XsdValidator {
      * <p/>
      * The document being checked is by definition one whose conformance is not yet established,
      * which usually means a foreign one, so it is parsed through {@link SecureXmlSource} rather
-     * than handed to the validator as a raw stream. A default {@link Validator} parses with a
-     * default JAXP parser and would honour a DOCTYPE, dereference the external entities declared
-     * in it, and expand nested internal ones - so validating a hostile dataset would read a file
-     * off this host, or issue a request from it, before ever reporting whether the document was
-     * schema-valid. A document that declares a DOCTYPE fails here as a {@link SAXException} whose
-     * message names the declaration, distinct from the {@code cvc-} messages a schema failure
-     * carries.
+     * than handed to the validator as a raw stream - otherwise a hostile dataset would read a file
+     * off this host, or issue a request from it, before the validator ever reported whether the
+     * document was schema-valid. A document that declares a DOCTYPE fails here as a
+     * {@link SAXException} whose message names the declaration, distinct from the {@code cvc-}
+     * messages a schema failure carries.
      *
      * @param xml the marshalled dataset
      * @throws SAXException if the document is not schema-valid, or declares a DOCTYPE or an
@@ -68,7 +65,7 @@ public final class S124XsdValidator {
         validator.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
         validator.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
         try {
-            validator.validate(SecureXmlSource.of(xml.getBytes(StandardCharsets.UTF_8)));
+            validator.validate(SecureXmlSource.of(xml));
         } catch (JAXBException e) {
             // SecureXmlSource reports a parser it cannot harden as the JAXBException its JAXB
             // callers declare; this caller declares SAXException, and a parser that cannot be

@@ -1,5 +1,9 @@
 package dk.dma.niord.s100.xmlbindings.s124.v2_0_0;
 
+import static org.assertj.core.api.SoftAssertions.assertSoftly;
+
+import org.assertj.core.api.SoftAssertions;
+
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -152,6 +156,43 @@ public final class XxePayloads {
 
     /** The observable result of a read: whether it failed, and everything it said or returned. */
     public record Outcome(boolean threw, String text) {
+    }
+
+
+    /**
+     * The read failed, said so because of the declaration, and neither canary appears anywhere the
+     * caller can see it. Asserted softly so that a regression reports the leak as well as the
+     * missing rejection, instead of stopping at whichever fails first.
+     */
+    public static void assertNothingLeaked(Outcome outcome) {
+        assertSoftly(softly -> {
+            softly.assertThat(outcome.text())
+                    .as("the file's content must not reach the caller")
+                    .doesNotContain(FILE_CANARY);
+            softly.assertThat(outcome.text())
+                    .as("the DTD fragment's content must not reach the caller")
+                    .doesNotContain(PARAMETER_CANARY);
+            assertRefusal(softly, outcome);
+        });
+    }
+
+    /**
+     * The document was refused for its DOCTYPE. Asserting the reason, not just the failure, is what
+     * separates hardening from a parser that resolved the entity and then tripped over something
+     * else - and, on the validation path, what tells an attack from a non-conformant dataset.
+     */
+    public static void assertRefusedAtTheDoctype(Outcome outcome) {
+        assertSoftly(softly -> assertRefusal(softly, outcome));
+    }
+
+    private static void assertRefusal(SoftAssertions softly, Outcome outcome) {
+        softly.assertThat(outcome.threw())
+                .as("the hostile document must be refused, it returned: %s", outcome.text())
+                .isTrue();
+        softly.assertThat(outcome.text())
+                .as("the refusal must name the DOCTYPE, not a schema rule")
+                .contains(REFUSAL)
+                .doesNotContain(SCHEMA_FAILURE);
     }
 
 }

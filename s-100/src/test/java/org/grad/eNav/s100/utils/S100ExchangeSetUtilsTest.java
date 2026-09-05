@@ -893,11 +893,15 @@ class S100ExchangeSetUtilsTest {
      * Marshals through a JAXB context built independently of the one the utilities cache, so
      * that the assertion above compares against bytes rather than against the same code path.
      */
+    private static JAXBContext independentContext;
+
     private static byte[] marshalToBytes(Object object, java.lang.Boolean format) throws JAXBException {
-        final JAXBContext context = JAXBContext.newInstance(
-                S100ExchangeCatalogue.class.getPackageName(),
-                S100ExchangeCatalogue.class.getClassLoader());
-        final Marshaller marshaller = context.createMarshaller();
+        if (independentContext == null) {
+            independentContext = JAXBContext.newInstance(
+                    S100ExchangeCatalogue.class.getPackageName(),
+                    S100ExchangeCatalogue.class.getClassLoader());
+        }
+        final Marshaller marshaller = independentContext.createMarshaller();
         marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, format);
         final ByteArrayOutputStream out = new ByteArrayOutputStream();
         marshaller.marshal(object, out);

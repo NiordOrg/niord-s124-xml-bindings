@@ -13,7 +13,6 @@ import java.time.format.DateTimeFormatter;
 import javax.xml.XMLConstants;
 import javax.xml.transform.OutputKeys;
 import javax.xml.transform.Transformer;
-import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.sax.SAXSource;
 import javax.xml.transform.stream.StreamResult;
@@ -24,6 +23,7 @@ import org.grad.eNav.s100.utils.SecureXmlSource;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.impl.DatasetImpl;
@@ -117,12 +117,9 @@ public final class S124Utils {
      * <p/>
      * This is the library's public read path for a dataset GML, and the dataset it is handed is
      * routinely a foreign one - the whole point of S-124 is that warnings travel between
-     * producers and consumers - so the document is parsed through {@link SecureXmlSource}, which
-     * refuses a document type declaration and dereferences no external entity. A hostile dataset
-     * would otherwise read a file off the parsing host into a warning's text, or make that host
-     * issue a request of the attacker's choosing. An S-124 dataset is an XML Schema instance
-     * document (S-124 Ed 2.0.0, clause 8.1.1) and never legitimately carries a DOCTYPE, so
-     * nothing conformant is refused.
+     * producers and consumers - so it is parsed through {@link SecureXmlSource}, which refuses a
+     * document type declaration. An S-124 dataset is an XML Schema instance document (S-124
+     * Ed 2.0.0, clause 8.1.1) and never legitimately carries one.
      * <p/>
      * No schema or conformance checking happens here: use {@link S124XsdValidator#validate} and
      * {@link S124DatasetValidator#validate} on a dataset whose conformance matters.
@@ -135,9 +132,7 @@ public final class S124Utils {
     public static Dataset unmarshallS124(String xml) throws JAXBException {
         requireNonNull(xml, "xml is null");
         Unmarshaller unmarshaller = JAXB_CONTEXT.createUnmarshaller();
-        SAXSource source = SecureXmlSource.of(xml.getBytes(StandardCharsets.UTF_8));
-        Object value = JAXBIntrospector.getValue(unmarshaller.unmarshal(source));
-        return (Dataset) value;
+        return (Dataset) JAXBIntrospector.getValue(unmarshaller.unmarshal(SecureXmlSource.of(xml)));
     }
 
     /**
@@ -189,14 +184,9 @@ public final class S124Utils {
      * <p/>
      * The document is parsed through {@link SecureXmlSource}, exactly as {@link #unmarshallS124}
      * is, because the reason to pretty-print a dataset on this class is normally that it just
-     * arrived from another producer. An identity transform reading a raw {@code StreamSource}
-     * parses with a default JAXP parser, which honours a document type declaration: an
-     * {@code <!ENTITY x SYSTEM "file:///...">} referenced from the body is resolved and copied
-     * into the string this method returns, so an unhardened pretty-printer hands the caller the
-     * content of a file on the parsing host, and the {@code http://} form of the same declaration
-     * makes that host issue a request of the attacker's choosing. Refusing the DOCTYPE costs
-     * nothing here: an S-124 dataset is an XML Schema instance document (S-124 Ed 2.0.0, clause
-     * 8.1.1) and never legitimately carries one.
+     * arrived from another producer - and an identity transform would otherwise copy a resolved
+     * external entity straight into the string returned here. An S-124 dataset is an XML Schema
+     * instance document (S-124 Ed 2.0.0, clause 8.1.1) and never legitimately carries a DOCTYPE.
      *
      * @param input the XML document to re-indent
      * @return the same document, indented by four spaces
@@ -206,14 +196,21 @@ public final class S124Utils {
     public static String prettyPrint(String input) {
         requireNonNull(input, "input is null");
         try {
-            SAXSource xmlInput = SecureXmlSource.of(input.getBytes(StandardCharsets.UTF_8));
+            SAXSource xmlInput = SecureXmlSource.of(input);
             // Xerces' default handler writes a fatal parse error to stderr before the parse
             // unwinds. The refusal is already reported to the caller as the exception below, and a
             // library has no business printing a caller's document problem to the console.
             xmlInput.getXMLReader().setErrorHandler(RETHROW_PARSE_FAILURES);
             StringWriter stringWriter = new StringWriter();
             StreamResult xmlOutput = new StreamResult(stringWriter);
-            Transformer transformer = secureTransformerFactory().newTransformer();
+            // Belt and braces: the source above already carries a reader that refuses the DOCTYPE,
+            // so these settings only matter if this ever transforms a raw StreamSource instead. A
+            // TransformerFactory is not documented as safe to share between threads, hence per call.
+            TransformerFactory transformerFactory = TransformerFactory.newInstance();
+            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            Transformer transformer = transformerFactory.newTransformer();
             transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
             transformer.setOutputProperty(OutputKeys.METHOD, "xml");
             transformer.setOutputProperty(OutputKeys.INDENT, "yes");
@@ -226,43 +223,16 @@ public final class S124Utils {
         }
     }
 
-    /** Reports a parse failure by throwing it, rather than by printing it and throwing it. */
-    private static final ErrorHandler RETHROW_PARSE_FAILURES = new ErrorHandler() {
-        @Override
-        public void warning(SAXParseException e) {
-            // A warning is not a failure and there is nothing here to report it to.
-        }
-
+    /**
+     * Reports a parse failure by throwing it, rather than by printing it and throwing it.
+     * DefaultHandler already ignores warnings and rethrows fatal errors, which is every case a
+     * non-validating parse can raise; only the recoverable-error case has to be added.
+     */
+    private static final ErrorHandler RETHROW_PARSE_FAILURES = new DefaultHandler() {
         @Override
         public void error(SAXParseException e) throws SAXException {
             throw e;
         }
-
-        @Override
-        public void fatalError(SAXParseException e) throws SAXException {
-            throw e;
-        }
     };
 
-    /**
-     * A transformer factory that dereferences nothing, built per call because a
-     * {@code TransformerFactory} is not documented as safe to share between threads.
-     * <p/>
-     * The two access properties are defence in depth rather than the control that stops an attack:
-     * the source handed to the transform is a {@link SecureXmlSource}, which carries its own reader
-     * and refuses the DOCTYPE before either property could apply. They matter if that ever changes
-     * - a raw {@code StreamSource} would be parsed by the factory's own parser instead. Empty
-     * string means "no protocol is allowed", per the JAXP javadoc for these properties.
-     *
-     * @throws TransformerConfigurationException if the platform's factory cannot be told to refuse
-     *                                           external references, in which case nothing is
-     *                                           transformed
-     */
-    private static TransformerFactory secureTransformerFactory() throws TransformerConfigurationException {
-        TransformerFactory factory = TransformerFactory.newInstance();
-        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
-        return factory;
-    }
 }

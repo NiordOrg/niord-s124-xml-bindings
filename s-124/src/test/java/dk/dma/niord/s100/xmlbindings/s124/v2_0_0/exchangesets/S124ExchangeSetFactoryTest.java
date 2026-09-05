@@ -2089,14 +2089,10 @@ class S124ExchangeSetFactoryTest {
      */
     @Test
     void signingCertificatePemsAreTheDataServerChainSigningCertificateFirst() throws Exception {
-        S124ExchangeSetFactory.ExchangeSet set = S124ExchangeSetFactory.builder()
+        S124ExchangeSetFactory.ExchangeSet set = publisher()
                 .datasets(List.of(newDataset("DK.S124.chain")))
-                .organization("DMA")
-                .producerCode("DK00")
                 .certificatePem(dataServerViaDcPem)
                 .intermediateCertificatePems(List.of(domainCoordinatorPem))
-                .signer((alg, payload) -> DUMMY_SIGNATURE)
-                .phone("+4572196000")
                 .build()
                 .toExchangeSet();
 
@@ -2113,14 +2109,10 @@ class S124ExchangeSetFactoryTest {
      */
     @Test
     void theReturnedChainCancelsAfterTheCertificateHasRotated() throws Exception {
-        S124ExchangeSetFactory.ExchangeSet published = S124ExchangeSetFactory.builder()
+        S124ExchangeSetFactory.ExchangeSet published = publisher()
                 .datasets(List.of(newDataset("DK.S124.rotate-from-result")))
-                .organization("DMA")
-                .producerCode("DK00")
                 .certificatePem(dataServerViaDcPem)
                 .intermediateCertificatePems(List.of(domainCoordinatorPem))
-                .signer((alg, payload) -> DUMMY_SIGNATURE)
-                .phone("+4572196000")
                 .build()
                 .toExchangeSet();
         S100DatasetDiscoveryMetadata retainedEntry = published.datasets().get(0).discoveryMetadata();

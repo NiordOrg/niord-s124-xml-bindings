@@ -105,10 +105,11 @@ class SecureXmlSourceTest {
         assertRefused(XxePayloads.bareDoctype("root"), "harmless");
     }
 
-    /** Nothing is parsed on a null input, so the misuse surfaces as a misuse. */
+    /** Nothing is parsed on a null input, so the misuse surfaces as a misuse, on either overload. */
     @Test
     void rejectsANullDocument() {
-        assertThrows(NullPointerException.class, () -> SecureXmlSource.of(null));
+        assertThrows(NullPointerException.class, () -> SecureXmlSource.of((byte[]) null));
+        assertThrows(NullPointerException.class, () -> SecureXmlSource.of((String) null));
     }
 
     private static void assertRefused(String doctype, String body) {

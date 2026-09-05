@@ -74,9 +74,7 @@ import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124ConformanceException;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124Utils;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124XsdValidator;
-import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
-import jakarta.xml.bind.Marshaller;
 
 /**
  * Builds an S-100 Ed 5.0 Part 17 exchange set (ZIP) from one or more S-124
@@ -285,10 +283,9 @@ public final class S124ExchangeSetFactory {
     public ExchangeSet toExchangeSet() {
         try {
             List<DatasetFile> datasetFiles = marshalDatasets();
-            S100DatasetDiscoveryMetadata[] published =
-                    new S100DatasetDiscoveryMetadata[datasetFiles.size()];
-            String catalogXml = buildCatalogueXml(datasetFiles, published);
-            byte[] catalogBytes = catalogXml.getBytes(StandardCharsets.UTF_8);
+            S100ExchangeCatalogue catalogue = buildCatalogue(datasetFiles);
+            byte[] catalogBytes = S100ExchangeSetUtils.marshalS100ExchangeSetCatalogue(catalogue)
+                    .getBytes(StandardCharsets.UTF_8);
             byte[] catalogSig = buildCatalogueSignature(catalogBytes);
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -304,7 +301,7 @@ public final class S124ExchangeSetFactory {
                 putFileEntry(zos, CATALOG_XML, catalogBytes);
                 putFileEntry(zos, CATALOG_SIGN, catalogSig);
             }
-            return new ExchangeSet(baos.toByteArray(), publishedDatasets(datasetFiles, published),
+            return new ExchangeSet(baos.toByteArray(), publishedDatasets(datasetFiles, catalogue),
                     Stream.concat(Stream.of(cfg.certificatePem), cfg.intermediateCertificatePems.stream())
                             .toList());
         } catch (ExchangeSetException | S124ConformanceException e) {
@@ -317,23 +314,30 @@ public final class S124ExchangeSetFactory {
     }
 
     /**
-     * Pairs each packaged dataset with the catalogue entry captured for it.
+     * Pairs each packaged dataset with the entry the catalogue published it under.
      * <p/>
-     * The pairing is checked rather than assumed: a producer that persisted an entry naming a file
-     * the exchange set does not contain would hold evidence of something it never sent, and clause
-     * 17-4.4.1 would later cancel that file name. It is the one silent failure mode this hand-over
-     * has, so it is made loud.
+     * The entries are read off the built catalogue rather than recorded on the side, so what is
+     * handed back is by construction what CATALOG.XML carries. That leans on
+     * {@link S100ExchangeCatalogueBuilder} emitting dataset entries in the order they were
+     * registered, and on {@link #buildCatalogue} registering every dataset before any
+     * cancellation - a cross-module assumption, so it is checked against the file name rather
+     * than assumed. A producer that persisted an entry naming a file the exchange set does not
+     * contain would hold evidence of something it never sent, and clause 17-4.4.1 would later
+     * cancel by exactly that name; it is the one silent failure mode this hand-over has, so it
+     * is made loud.
      */
     private static List<PublishedDataset> publishedDatasets(List<DatasetFile> datasetFiles,
-            S100DatasetDiscoveryMetadata[] published) {
+            S100ExchangeCatalogue catalogue) {
+        List<S100DatasetDiscoveryMetadata> entries =
+                catalogue.getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas();
         List<PublishedDataset> result = new ArrayList<>(datasetFiles.size());
         for (int i = 0; i < datasetFiles.size(); i++) {
             DatasetFile df = datasetFiles.get(i);
-            S100DatasetDiscoveryMetadata entry = published[i];
+            S100DatasetDiscoveryMetadata entry = i < entries.size() ? entries.get(i) : null;
             String expected = FILE_URI_PREFIX + df.fileName;
             if (entry == null || !expected.equals(entry.getFileName())) {
                 throw new ExchangeSetException(String.format(
-                        "Internal invariant violated: the catalogue entry captured for the dataset "
+                        "Internal invariant violated: the catalogue entry published for the dataset "
                                 + "packaged as %s names %s. The build fails rather than hand back a "
                                 + "record of a file the exchange set does not contain, which S-100 "
                                 + "Part 17, clause 17-4.4.1, would later cancel by that name",
@@ -546,12 +550,9 @@ public final class S124ExchangeSetFactory {
      * <p/>
      * The signature takes a ZIP, and an exchange set received from a SECOM peer is a realistic
      * thing to pass it, so the catalogue is treated as foreign XML: it is unmarshalled through
-     * {@link org.grad.eNav.s100.utils.SecureXmlSource}, which refuses a document type declaration
-     * outright and dereferences no external entity. That closes external-entity file disclosure,
-     * the SSRF a {@code SYSTEM "http://..."} entity would give an attacker inside this host's
-     * network, and billion-laughs expansion, in one control - and it costs nothing, because a
-     * catalogue conforming to S-100 Part 17, clause 17-4.2, never carries a DOCTYPE. A catalogue
-     * that does carry one fails here as an {@link ExchangeSetException}.
+     * {@link org.grad.eNav.s100.utils.SecureXmlSource}, which refuses a document type declaration.
+     * A catalogue conforming to S-100 Part 17, clause 17-4.2, never carries one, and one that does
+     * fails here as an {@link ExchangeSetException}.
      * <p/>
      * <b>Residual risk.</b> The archive itself is not bounded: the {@value #CATALOG_XML} entry is
      * read with {@code readAllBytes()}, so a ZIP whose catalogue entry decompresses to gigabytes -
@@ -772,14 +773,12 @@ public final class S124ExchangeSetFactory {
         standaloneSignature.setDigitalSignature(
                 signatureOnData("catalogueSig", CATALOG_FILE_NAME, cfg.signatureAlgorithm, catalogBytes));
 
-        JAXBContext jaxbContext = JAXBContext.newInstance(
-                StandaloneDigitalSignature.class.getPackageName(),
-                StandaloneDigitalSignature.class.getClassLoader());
-        Marshaller marshaller = jaxbContext.createMarshaller();
-        marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, Boolean.TRUE);
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        marshaller.marshal(standaloneSignature, out);
-        return out.toByteArray();
+        // Marshalled through S100ExchangeSetUtils rather than a context built here:
+        // StandaloneDigitalSignature shares its package and class loader with the catalogue
+        // types, so it is served by the context that class already caches - and building a
+        // second one costs about 50ms, which would otherwise dominate every exchange set.
+        return S100ExchangeSetUtils.marshalStandaloneDigitalSignature(standaloneSignature, Boolean.TRUE)
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     /** A certificate together with the id of the element that issued it. */
@@ -1150,11 +1149,11 @@ public final class S124ExchangeSetFactory {
     }
 
     /**
-     * Builds CATALOG.XML, storing the entry emitted for each dataset in {@code published} at the
-     * index that dataset has in {@code datasetFiles}.
+     * Builds the exchange catalogue: the dataset entries first, in the order of
+     * {@code datasetFiles}, then one entry per fileless cancellation.
      */
-    private String buildCatalogueXml(List<DatasetFile> datasetFiles,
-            S100DatasetDiscoveryMetadata[] published) throws JAXBException, CertificateException {
+    private S100ExchangeCatalogue buildCatalogue(List<DatasetFile> datasetFiles)
+            throws JAXBException, CertificateException {
         AtomicInteger signatureCounter = new AtomicInteger(1);
 
         S100ExchangeCatalogueBuilder catBuilder = new S100ExchangeCatalogueBuilder(
@@ -1228,9 +1227,7 @@ public final class S124ExchangeSetFactory {
         }
         catBuilder.setCertificates(certificatesById).setCertificateIssuers(certificateIssuers);
 
-        for (int datasetIndex = 0; datasetIndex < datasetFiles.size(); datasetIndex++) {
-            DatasetFile df = datasetFiles.get(datasetIndex);
-            int publishedIndex = datasetIndex;
+        for (DatasetFile df : datasetFiles) {
             Geometry bbox = datasetExtent(df);
             DataSetIdentificationType ident = df.dataset.getDatasetIdentificationInformation();
             // The fallback is UTC rather than the JVM default zone, like every other date this
@@ -1269,17 +1266,7 @@ public final class S124ExchangeSetFactory {
                     ? publication.toLocalTime()
                     : null;
 
-            // S100ExchangeCatalogueBuilder.build() invokes each provider once and adds what it
-            // returns to the catalogue unmutated, so the value captured here is the object that
-            // gets marshalled into CATALOG.XML - the invariant the test
-            // toExchangeSetReturnsTheEntryThatWasMarshalledIntoTheCatalogue locks. It is the
-            // profiled return value that is captured, not the builder's intermediate: should
-            // s124Profile ever start copying, the object handed to it would still carry the
-            // replacedData the S-124 clause 12.2.2 profile has no attribute for, and a later
-            // cancellation would reproduce a field the original never carried. The slot is
-            // indexed rather than appended to, so the positional contract of
-            // ExchangeSet.datasets() does not depend on when the builder invokes the provider.
-            catBuilder.addDatasetMetadata(builder -> published[publishedIndex] = s124Profile(builder
+            catBuilder.addDatasetMetadata(builder -> s124Profile(builder
                     .setFileName(FILE_URI_PREFIX + df.fileName)
                     .setDatasetID(datasetId(preamble, df))
                     .setDescription(datasetDescription(preamble))
@@ -1342,7 +1329,7 @@ public final class S124ExchangeSetFactory {
         }
 
         try {
-            return S100ExchangeSetUtils.marshalS100ExchangeSetCatalogue(catBuilder.build());
+            return catBuilder.build();
         } catch (java.security.cert.CertificateEncodingException e) {
             throw new CertificateException(e);
         }

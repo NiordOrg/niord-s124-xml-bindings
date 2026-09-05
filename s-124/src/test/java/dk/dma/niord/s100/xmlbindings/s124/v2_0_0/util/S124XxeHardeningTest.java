@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -40,8 +41,8 @@ class S124XxeHardeningTest {
 
     private String secretFileUri;
     private String secretDtdUri;
-    private String datasetXml;
-    private String rootElement;
+    private static String datasetXml;
+    private static String rootElement;
 
     @BeforeEach
     void writeTheFilesAnAttackerWouldRead(@TempDir Path tempDir) throws IOException {
@@ -49,12 +50,12 @@ class S124XxeHardeningTest {
         this.secretDtdUri = XxePayloads.writeSecretDtd(tempDir);
     }
 
-    @BeforeEach
-    void marshalTheDatasetEveryPayloadIsBuiltFrom() throws Exception {
+    @BeforeAll
+    static void marshalTheDatasetEveryPayloadIsBuiltFrom() throws Exception {
         // Marshalled with the conformance checks on, so the body of every payload below is a
         // dataset this library considers valid and the schema accepts.
-        this.datasetXml = S124Utils.marshalS124(S124TestDatasets.datasetWithPreamble(), true, true);
-        this.rootElement = rootElementOf(this.datasetXml);
+        datasetXml = S124Utils.marshalS124(S124TestDatasets.datasetWithPreamble(), true, true);
+        rootElement = rootElementOf(datasetXml);
     }
 
     @Test
@@ -66,30 +67,30 @@ class S124XxeHardeningTest {
 
     @Test
     void unmarshalRefusesAnExternalGeneralEntityAndDoesNotReadTheFile() {
-        assertNothingLeaked(unmarshal(XxePayloads.externalGeneralEntity(this.rootElement, this.secretFileUri),
+        XxePayloads.assertNothingLeaked(unmarshal(XxePayloads.externalGeneralEntity(rootElement, this.secretFileUri),
                 TITLE, "&leak;"));
     }
 
     @Test
     void unmarshalRefusesAnExternalParameterEntityAndDoesNotFetchTheFragment() {
-        assertNothingLeaked(unmarshal(XxePayloads.externalParameterEntity(this.rootElement, this.secretDtdUri),
+        XxePayloads.assertNothingLeaked(unmarshal(XxePayloads.externalParameterEntity(rootElement, this.secretDtdUri),
                 TITLE, "&smuggled;"));
     }
 
     @Test
     void unmarshalRefusesBillionLaughsAtTheDeclaration() {
-        assertRefusedAtTheDoctype(unmarshal(XxePayloads.billionLaughs(this.rootElement), TITLE, "&lol9;"));
+        XxePayloads.assertRefusedAtTheDoctype(unmarshal(XxePayloads.billionLaughs(rootElement), TITLE, "&lol9;"));
     }
 
     @Test
     void unmarshalRefusesABareDoctype() {
-        assertRefusedAtTheDoctype(unmarshal(XxePayloads.bareDoctype(this.rootElement), TITLE, "A harmless title"));
+        XxePayloads.assertRefusedAtTheDoctype(unmarshal(XxePayloads.bareDoctype(rootElement), TITLE, "A harmless title"));
     }
 
     @Test
     void validationWithoutADoctypeStillAcceptsAValidDataset() {
         final Outcome outcome = XxePayloads.outcomeOf(() -> {
-            S124XsdValidator.validate(this.datasetXml);
+            S124XsdValidator.validate(datasetXml);
             return "schema-valid";
         });
 
@@ -98,24 +99,24 @@ class S124XxeHardeningTest {
 
     @Test
     void validationRefusesAnExternalGeneralEntityAndDoesNotReadTheFile() {
-        assertNothingLeaked(validate(XxePayloads.externalGeneralEntity(this.rootElement, this.secretFileUri),
+        XxePayloads.assertNothingLeaked(validate(XxePayloads.externalGeneralEntity(rootElement, this.secretFileUri),
                 REFERENCE_DATE, "&leak;"));
     }
 
     @Test
     void validationRefusesAnExternalParameterEntityAndDoesNotFetchTheFragment() {
-        assertNothingLeaked(validate(XxePayloads.externalParameterEntity(this.rootElement, this.secretDtdUri),
+        XxePayloads.assertNothingLeaked(validate(XxePayloads.externalParameterEntity(rootElement, this.secretDtdUri),
                 REFERENCE_DATE, "&smuggled;"));
     }
 
     @Test
     void validationRefusesBillionLaughsAtTheDeclaration() {
-        assertRefusedAtTheDoctype(validate(XxePayloads.billionLaughs(this.rootElement), REFERENCE_DATE, "&lol9;"));
+        XxePayloads.assertRefusedAtTheDoctype(validate(XxePayloads.billionLaughs(rootElement), REFERENCE_DATE, "&lol9;"));
     }
 
     @Test
     void validationRefusesABareDoctype() {
-        assertRefusedAtTheDoctype(validate(XxePayloads.bareDoctype(this.rootElement), REFERENCE_DATE, "2026-08-25"));
+        XxePayloads.assertRefusedAtTheDoctype(validate(XxePayloads.bareDoctype(rootElement), REFERENCE_DATE, "2026-08-25"));
     }
 
     @Test
@@ -127,65 +128,24 @@ class S124XxeHardeningTest {
 
     @Test
     void prettyPrintRefusesAnExternalGeneralEntityAndDoesNotReadTheFile() {
-        assertNothingLeaked(prettyPrint(XxePayloads.externalGeneralEntity(this.rootElement, this.secretFileUri),
+        XxePayloads.assertNothingLeaked(prettyPrint(XxePayloads.externalGeneralEntity(rootElement, this.secretFileUri),
                 TITLE, "&leak;"));
     }
 
     @Test
     void prettyPrintRefusesAnExternalParameterEntityAndDoesNotFetchTheFragment() {
-        assertNothingLeaked(prettyPrint(XxePayloads.externalParameterEntity(this.rootElement, this.secretDtdUri),
+        XxePayloads.assertNothingLeaked(prettyPrint(XxePayloads.externalParameterEntity(rootElement, this.secretDtdUri),
                 TITLE, "&smuggled;"));
     }
 
     @Test
     void prettyPrintRefusesBillionLaughsAtTheDeclaration() {
-        assertRefusedAtTheDoctype(prettyPrint(XxePayloads.billionLaughs(this.rootElement), TITLE, "&lol9;"));
+        XxePayloads.assertRefusedAtTheDoctype(prettyPrint(XxePayloads.billionLaughs(rootElement), TITLE, "&lol9;"));
     }
 
     @Test
     void prettyPrintRefusesABareDoctype() {
-        assertRefusedAtTheDoctype(prettyPrint(XxePayloads.bareDoctype(this.rootElement), TITLE, "A harmless title"));
-    }
-
-    /**
-     * The read failed, said so because of the declaration, and neither canary appears anywhere the
-     * caller can see it. Asserted softly so that a regression reports the leak as well as the
-     * missing rejection, instead of stopping at whichever fails first.
-     */
-    private static void assertNothingLeaked(Outcome outcome) {
-        assertSoftly(softly -> {
-            softly.assertThat(outcome.text())
-                    .as("the file's content must not reach the caller")
-                    .doesNotContain(XxePayloads.FILE_CANARY);
-            softly.assertThat(outcome.text())
-                    .as("the DTD fragment's content must not reach the caller")
-                    .doesNotContain(XxePayloads.PARAMETER_CANARY);
-            softly.assertThat(outcome.threw())
-                    .as("the hostile document must be refused, it returned: %s", outcome.text())
-                    .isTrue();
-            softly.assertThat(outcome.text())
-                    .as("the refusal must name the DOCTYPE, not a schema rule")
-                    .contains(XxePayloads.REFUSAL)
-                    .doesNotContain(XxePayloads.SCHEMA_FAILURE);
-        });
-    }
-
-    /**
-     * The document was refused for its DOCTYPE. Asserting the reason, not just the failure, is what
-     * separates hardening from a parser that resolved the entity and then tripped over something
-     * else - and, on the validation path, what tells a caller an attack from a non-conformant
-     * dataset.
-     */
-    private static void assertRefusedAtTheDoctype(Outcome outcome) {
-        assertSoftly(softly -> {
-            softly.assertThat(outcome.threw())
-                    .as("the hostile document must be refused, it returned: %s", outcome.text())
-                    .isTrue();
-            softly.assertThat(outcome.text())
-                    .as("the refusal must name the DOCTYPE, not a schema rule")
-                    .contains(XxePayloads.REFUSAL)
-                    .doesNotContain(XxePayloads.SCHEMA_FAILURE);
-        });
+        XxePayloads.assertRefusedAtTheDoctype(prettyPrint(XxePayloads.bareDoctype(rootElement), TITLE, "A harmless title"));
     }
 
     private Outcome unmarshal(String doctype, String element, String text) {
@@ -211,7 +171,7 @@ class S124XxeHardeningTest {
     /** The same dataset with one element's text replaced, and no DOCTYPE: the control document. */
     private String withText(String localName, String text) {
         final Pattern element = Pattern.compile("<((?:\\w+:)?" + localName + ")>[^<]*</\\1>");
-        final Matcher matcher = element.matcher(this.datasetXml);
+        final Matcher matcher = element.matcher(datasetXml);
         assertThat(matcher.find()).as("the fixture must carry a <%s> to inject into", localName).isTrue();
         return matcher.replaceFirst(
                 Matcher.quoteReplacement("<" + matcher.group(1) + ">" + text + "</" + matcher.group(1) + ">"));

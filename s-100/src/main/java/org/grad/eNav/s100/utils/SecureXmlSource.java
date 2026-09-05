@@ -1,19 +1,3 @@
-/*
- * Copyright (c) 2024 GLA Research and Development Directorate
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package org.grad.eNav.s100.utils;
 
 import jakarta.xml.bind.JAXBException;
@@ -28,15 +12,17 @@ import javax.xml.parsers.SAXParserFactory;
 import javax.xml.transform.sax.SAXSource;
 import java.io.ByteArrayInputStream;
 import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
- * Builds the XML source the read paths of this library parse foreign documents through: the two
- * {@code S100ExchangeSetUtils} unmarshals of a catalogue and of a dataset discovery metadata entry
- * (and so {@code S124ExchangeSetFactory.readDiscoveryMetadata} behind them), and the S-124 v2.0.0
- * {@code S124Utils.unmarshallS124}, {@code S124Utils.prettyPrint} and
- * {@code S124XsdValidator.validate}. The legacy {@code dk.baleen.s100.xmlbindings.s124.v1_0_0}
- * package is not among them and parses with a default JAXP parser.
+ * Builds the XML source this library parses foreign documents through.
+ * <p/>
+ * The rule, rather than a list of the call sites that follow it today: every path in the S-100
+ * 5.2.0 and S-124 2.0.0 code that parses XML it did not itself produce goes through this class.
+ * The legacy {@code dk.baleen.s100.xmlbindings.s124.v1_0_0} package predates the rule and is
+ * exempt - it still parses with a default JAXP parser, and is the one place a reader must not
+ * assume the rule holds.
  * <p/>
  * A JAXB {@code Unmarshaller} handed a raw {@code InputStream}, and a JAXP {@code Validator}
  * handed a raw {@code StreamSource}, parse with a default JAXP parser: document type declarations
@@ -70,13 +56,14 @@ import java.util.Objects;
  * producer's encoding choice that this hardening happens to break - it is either a mistake or an
  * attack, and rejecting it loses no conformant input.
  * <p/>
- * <b>Fail closed.</b> If the platform's parser cannot be told to refuse DOCTYPEs - the feature is
- * unrecognised, unsupported, or silently not applied - this class throws instead of returning a
- * parser that would go on to read the document anyway. A parser that cannot be instructed to
- * refuse a DOCTYPE must not be handed a peer's document, so the failure is surfaced as the
- * {@link JAXBException} the read paths already declare rather than degraded into a permissive
- * parse. Every feature is read back after it is set, because a factory is permitted to accept
- * {@code setFeature} and then not honour it.
+ * <b>Fail closed.</b> If the platform's parser cannot be told to refuse DOCTYPEs, this class
+ * throws instead of returning a parser that would go on to read the document anyway. JAXP makes
+ * {@code setFeature} throw for a feature that is unrecognised or unsupported, and the reader that
+ * will actually do the parsing is asked once afterwards whether the refusal is in force - so an
+ * implementation that accepted the setting without applying it is caught too. A parser that cannot
+ * be instructed to refuse a DOCTYPE must not be handed a peer's document, so the failure surfaces
+ * as the {@link JAXBException} the read paths already declare rather than being degraded into a
+ * permissive parse.
  * <p/>
  * What this does <b>not</b> address: the size of the document itself. The reader is streamed a
  * byte array the caller already holds in memory, so a caller that decompressed those bytes from an
@@ -135,13 +122,22 @@ public final class SecureXmlSource {
             final SAXParserFactory factory = SAXParserFactory.newInstance();
             factory.setNamespaceAware(true);
             factory.setXIncludeAware(false);
-            setFeatureOrFail(factory, XMLConstants.FEATURE_SECURE_PROCESSING, true);
-            setFeatureOrFail(factory, DISALLOW_DOCTYPE_DECL, true);
-            setFeatureOrFail(factory, EXTERNAL_GENERAL_ENTITIES, false);
-            setFeatureOrFail(factory, EXTERNAL_PARAMETER_ENTITIES, false);
+            // JAXP requires setFeature to throw for a feature it does not recognise or cannot
+            // support, so an unhardenable parser lands in the catch below rather than here.
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature(DISALLOW_DOCTYPE_DECL, true);
+            factory.setFeature(EXTERNAL_GENERAL_ENTITIES, false);
+            factory.setFeature(EXTERNAL_PARAMETER_ENTITIES, false);
 
             final XMLReader reader = factory.newSAXParser().getXMLReader();
             reader.setEntityResolver(NO_EXTERNAL_ENTITIES);
+            // Asked of the reader, not of the factory: a factory reports back whatever it was
+            // told, so only the object that will do the parsing can say whether the refusal is
+            // really in force.
+            if (!reader.getFeature(DISALLOW_DOCTYPE_DECL)) {
+                throw new SAXException(String.format(
+                        "The parser accepted but did not apply %s", DISALLOW_DOCTYPE_DECL));
+            }
 
             return new SAXSource(reader, new InputSource(new ByteArrayInputStream(xml)));
         } catch (ParserConfigurationException | SAXException e) {
@@ -154,19 +150,18 @@ public final class SecureXmlSource {
     }
 
     /**
-     * Sets a parser feature and reads it back, because {@code setFeature} succeeding is not by
-     * itself evidence that the feature took effect.
+     * Wraps an XML document already decoded to a string, the form every read path in this library
+     * holds one in. The characters are re-encoded as UTF-8, the encoding the marshalling side of
+     * {@code S100ExchangeSetUtils} writes and declares.
      *
-     * @throws SAXException if the feature is unrecognised, unsupported, or did not take the value
-     *                      asked for
+     * @param xml the XML document
+     * @return a source that parses it with entity resolution shut off
+     * @throws JAXBException if the platform's parser cannot be configured to refuse DOCTYPEs and
+     *                       external entities, in which case nothing is parsed
      */
-    private static void setFeatureOrFail(SAXParserFactory factory, String feature, boolean value)
-            throws SAXException, ParserConfigurationException {
-        factory.setFeature(feature, value);
-        if (factory.getFeature(feature) != value) {
-            throw new SAXException(String.format(
-                    "The SAX parser factory accepted but did not apply the feature %s=%s", feature, value));
-        }
+    public static SAXSource of(String xml) throws JAXBException {
+        Objects.requireNonNull(xml, "xml is null");
+        return of(xml.getBytes(StandardCharsets.UTF_8));
     }
 
 }

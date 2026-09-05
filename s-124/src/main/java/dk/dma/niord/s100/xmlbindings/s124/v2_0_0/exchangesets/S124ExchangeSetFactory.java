@@ -544,8 +544,21 @@ public final class S124ExchangeSetFactory {
      * interchangeable as a {@link Cancellation#original()}. An empty map is a legitimate result:
      * a cancellation-only exchange set publishes no dataset.
      * <p/>
-     * The input is expected to be the producer's own archive. The catalogue is unmarshalled with a
-     * default JAXB unmarshaller and is not hardened against hostile XML.
+     * The signature takes a ZIP, and an exchange set received from a SECOM peer is a realistic
+     * thing to pass it, so the catalogue is treated as foreign XML: it is unmarshalled through
+     * {@link org.grad.eNav.s100.utils.SecureXmlSource}, which refuses a document type declaration
+     * outright and dereferences no external entity. That closes external-entity file disclosure,
+     * the SSRF a {@code SYSTEM "http://..."} entity would give an attacker inside this host's
+     * network, and billion-laughs expansion, in one control - and it costs nothing, because a
+     * catalogue conforming to S-100 Part 17, clause 17-4.2, never carries a DOCTYPE. A catalogue
+     * that does carry one fails here as an {@link ExchangeSetException}.
+     * <p/>
+     * <b>Residual risk.</b> The archive itself is not bounded: the {@value #CATALOG_XML} entry is
+     * read with {@code readAllBytes()}, so a ZIP whose catalogue entry decompresses to gigabytes -
+     * a decompression bomb - exhausts this JVM's heap before any of the above applies. A caller
+     * accepting archives from a peer should bound them where it accepts them, by refusing an
+     * oversized upload or by reading through a size-limited stream, because only the caller knows
+     * what a legitimate exchange set weighs in its deployment.
      *
      * @param exchangeSetZip an exchange set ZIP as built by this factory
      * @return the published datasets' entries, keyed by packaged file name, in catalogue order

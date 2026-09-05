@@ -41,6 +41,12 @@ public class DatasetRoundTrip {
 ```
 
 The method is spelled **`unmarshallS124`**, with two `l` characters.
+`unmarshallS124`, `S124XsdValidator.validate` and `S124Utils.prettyPrint` treat
+their input as foreign XML: a `<!DOCTYPE>` is refused outright, so an external entity cannot read a file
+off the reading host or make it issue a request, and no entity expansion bomb can
+be declared. A conformant S-124 dataset never carries one (clause 8.1.1), so
+nothing legitimate is refused; one that does fails as a parse error rather than a
+schema error.
 Unmarshalling alone does not perform XSD or dataset-rule validation. A round trip
 preserves the object model rather than the original XML bytes: formatting,
 namespace prefixes, dates and coded values can change. Re-serialized XML needs

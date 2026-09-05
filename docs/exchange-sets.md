@@ -253,6 +253,19 @@ of the original, and the entry must be reproduced unchanged. It is not the
 publish-time path — it re-parses what the factory had in hand, and it can only tell
 datasets apart by file name.
 
+The catalogue is parsed as foreign XML: `SecureXmlSource` refuses a `<!DOCTYPE>`
+outright, so an external entity cannot read a file off the reading host or make it
+issue a request, and a billion-laughs expansion cannot be declared. A conformant
+catalogue never carries a DOCTYPE (S-100 Part 17, clause 17-4.2), so nothing
+legitimate is refused; one that does fails as an `ExchangeSetException`. The same
+applies to `discoveryMetadataFromXml(...)`, `S124Utils.unmarshallS124(...)`,
+`S124Utils.prettyPrint(...)` and `S124XsdValidator.validate(...)`.
+
+What is **not** covered: the ZIP is not size-bounded. `CATALOG.XML` is read with
+`readAllBytes()`, so a decompression bomb still exhausts the heap of whatever reads
+it. Bound the archive where you accept it — only you know what a legitimate exchange
+set weighs in your deployment.
+
 ### Migrating from 0.0.12
 
 `Cancellation` used to take the file name, identifiers, bounding box and a list of

@@ -2,9 +2,7 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util;
 
 import static java.util.Objects.requireNonNull;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.StringReader;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
@@ -12,15 +10,20 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 
+import javax.xml.XMLConstants;
 import javax.xml.transform.OutputKeys;
-import javax.xml.transform.Source;
 import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.sax.SAXSource;
 import javax.xml.transform.stream.StreamResult;
-import javax.xml.transform.stream.StreamSource;
 
 import org.grad.eNav.s100.adapters.DateAdapter;
 import org.grad.eNav.s100.adapters.OffsetDateTimeAdapter;
+import org.grad.eNav.s100.utils.SecureXmlSource;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.impl.DatasetImpl;
@@ -47,8 +50,6 @@ public final class S124Utils {
             throw new ExceptionInInitializerError(e);
         }
     }
-
-    private static final TransformerFactory TRANSFORMER_FACTORY = TransformerFactory.newInstance();
 
     private S124Utils() {
     }
@@ -111,11 +112,31 @@ public final class S124Utils {
         return out.toString(StandardCharsets.UTF_8);
     }
 
+    /**
+     * Reads an S-124 dataset back from its XML form.
+     * <p/>
+     * This is the library's public read path for a dataset GML, and the dataset it is handed is
+     * routinely a foreign one - the whole point of S-124 is that warnings travel between
+     * producers and consumers - so the document is parsed through {@link SecureXmlSource}, which
+     * refuses a document type declaration and dereferences no external entity. A hostile dataset
+     * would otherwise read a file off the parsing host into a warning's text, or make that host
+     * issue a request of the attacker's choosing. An S-124 dataset is an XML Schema instance
+     * document (S-124 Ed 2.0.0, clause 8.1.1) and never legitimately carries a DOCTYPE, so
+     * nothing conformant is refused.
+     * <p/>
+     * No schema or conformance checking happens here: use {@link S124XsdValidator#validate} and
+     * {@link S124DatasetValidator#validate} on a dataset whose conformance matters.
+     *
+     * @param xml the marshalled dataset
+     * @return the unmarshalled dataset
+     * @throws JAXBException if the document cannot be read, including when it declares a DOCTYPE
+     *                       or an external entity
+     */
     public static Dataset unmarshallS124(String xml) throws JAXBException {
         requireNonNull(xml, "xml is null");
         Unmarshaller unmarshaller = JAXB_CONTEXT.createUnmarshaller();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8));
-        Object value = JAXBIntrospector.getValue(unmarshaller.unmarshal(in));
+        SAXSource source = SecureXmlSource.of(xml.getBytes(StandardCharsets.UTF_8));
+        Object value = JAXBIntrospector.getValue(unmarshaller.unmarshal(source));
         return (Dataset) value;
     }
 
@@ -163,12 +184,36 @@ public final class S124Utils {
         }
     }
 
+    /**
+     * Re-indents an XML document, for logging it or putting it in front of a person.
+     * <p/>
+     * The document is parsed through {@link SecureXmlSource}, exactly as {@link #unmarshallS124}
+     * is, because the reason to pretty-print a dataset on this class is normally that it just
+     * arrived from another producer. An identity transform reading a raw {@code StreamSource}
+     * parses with a default JAXP parser, which honours a document type declaration: an
+     * {@code <!ENTITY x SYSTEM "file:///...">} referenced from the body is resolved and copied
+     * into the string this method returns, so an unhardened pretty-printer hands the caller the
+     * content of a file on the parsing host, and the {@code http://} form of the same declaration
+     * makes that host issue a request of the attacker's choosing. Refusing the DOCTYPE costs
+     * nothing here: an S-124 dataset is an XML Schema instance document (S-124 Ed 2.0.0, clause
+     * 8.1.1) and never legitimately carries one.
+     *
+     * @param input the XML document to re-indent
+     * @return the same document, indented by four spaces
+     * @throws RuntimeException if the document cannot be parsed or written, including when it
+     *                          declares a DOCTYPE or an external entity
+     */
     public static String prettyPrint(String input) {
+        requireNonNull(input, "input is null");
         try {
-            Source xmlInput = new StreamSource(new StringReader(input));
+            SAXSource xmlInput = SecureXmlSource.of(input.getBytes(StandardCharsets.UTF_8));
+            // Xerces' default handler writes a fatal parse error to stderr before the parse
+            // unwinds. The refusal is already reported to the caller as the exception below, and a
+            // library has no business printing a caller's document problem to the console.
+            xmlInput.getXMLReader().setErrorHandler(RETHROW_PARSE_FAILURES);
             StringWriter stringWriter = new StringWriter();
             StreamResult xmlOutput = new StreamResult(stringWriter);
-            Transformer transformer = TRANSFORMER_FACTORY.newTransformer();
+            Transformer transformer = secureTransformerFactory().newTransformer();
             transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
             transformer.setOutputProperty(OutputKeys.METHOD, "xml");
             transformer.setOutputProperty(OutputKeys.INDENT, "yes");
@@ -179,5 +224,45 @@ public final class S124Utils {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    /** Reports a parse failure by throwing it, rather than by printing it and throwing it. */
+    private static final ErrorHandler RETHROW_PARSE_FAILURES = new ErrorHandler() {
+        @Override
+        public void warning(SAXParseException e) {
+            // A warning is not a failure and there is nothing here to report it to.
+        }
+
+        @Override
+        public void error(SAXParseException e) throws SAXException {
+            throw e;
+        }
+
+        @Override
+        public void fatalError(SAXParseException e) throws SAXException {
+            throw e;
+        }
+    };
+
+    /**
+     * A transformer factory that dereferences nothing, built per call because a
+     * {@code TransformerFactory} is not documented as safe to share between threads.
+     * <p/>
+     * The two access properties are defence in depth rather than the control that stops an attack:
+     * the source handed to the transform is a {@link SecureXmlSource}, which carries its own reader
+     * and refuses the DOCTYPE before either property could apply. They matter if that ever changes
+     * - a raw {@code StreamSource} would be parsed by the factory's own parser instead. Empty
+     * string means "no protocol is allowed", per the JAXP javadoc for these properties.
+     *
+     * @throws TransformerConfigurationException if the platform's factory cannot be told to refuse
+     *                                           external references, in which case nothing is
+     *                                           transformed
+     */
+    private static TransformerFactory secureTransformerFactory() throws TransformerConfigurationException {
+        TransformerFactory factory = TransformerFactory.newInstance();
+        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+        return factory;
     }
 }

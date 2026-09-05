@@ -34,6 +34,7 @@ import org.iso.standards.iso._19115.__3.lan._1.MDCharacterSetCodePropertyType;
 import org.iso.standards.iso._19115.__3.lan._1.PTLocaleType;
 import org.locationtech.jts.geom.*;
 
+import javax.xml.transform.sax.SAXSource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.lang.Boolean;
@@ -385,23 +386,32 @@ public class S100ExchangeSetUtils {
      * The character string input object contains the XML content of the S100
      * Exchange Set Catalogue. We can easily translate that into an
      * S100ExchangeCatalogue object so that it can be accessed more efficiently.
+     * <p/>
+     * A catalogue reaches this method from an archive, which the reader may not
+     * have produced - a SECOM peer's exchange set is a realistic input - so it is
+     * parsed through {@link SecureXmlSource}: a document type declaration is
+     * refused, which closes external-entity file disclosure, SSRF and entity
+     * expansion together. A schema-valid catalogue never carries one (S-100 Part
+     * 17, clause 17-4.2), so no conformant input is lost. Such a document fails
+     * as a JAXBException, the same way malformed XML already does.
      *
      * @param s100ExchangeCatalogue the S100 Exchange Set Catalogue XML content
      * @return The unmarshalled 100 Exchange Set Catalogue object
-     * @throws JAXBException for errors in the unmarshalling operation
+     * @throws JAXBException for errors in the unmarshalling operation, including a
+     *                       document that declares a DOCTYPE or an external entity
      */
     public static S100ExchangeCatalogue unmarshallS100ExchangeSetCatalogue(String s100ExchangeCatalogue) throws JAXBException {
         // Create the JAXB objects
         JAXBContext jaxbContext = catalogueJaxbContext();
         Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
 
-        // Transform the S100 Exchange Set Catalogue context into an input stream
+        // Transform the S100 Exchange Set Catalogue context into a hardened source.
         // The marshalling side writes UTF-8, so the platform default charset must not be
         // allowed to decide how the document is read back.
-        ByteArrayInputStream is = new ByteArrayInputStream(s100ExchangeCatalogue.getBytes(StandardCharsets.UTF_8));
+        SAXSource source = SecureXmlSource.of(s100ExchangeCatalogue.getBytes(StandardCharsets.UTF_8));
 
         // And translate
-        return (S100ExchangeCatalogue) JAXBIntrospector.getValue(jaxbUnmarshaller.unmarshal(is));
+        return (S100ExchangeCatalogue) JAXBIntrospector.getValue(jaxbUnmarshaller.unmarshal(source));
     }
 
     /**
@@ -465,21 +475,29 @@ public class S100ExchangeSetUtils {
      * catalogue, because it is what resolves the S100_SE_DigitalSignature
      * substitution group: a stored signature therefore returns as the
      * S100_SE_SignatureOnData it was marshalled as.
+     * <p/>
+     * The entry is parsed through {@link SecureXmlSource}, which refuses a document
+     * type declaration and resolves no external entity. The stored string is usually
+     * the producer's own column, but it is the {@code original} of a cancellation and
+     * can equally have been recovered from a foreign archive - and an entry that has
+     * sat in a database since it was published is exactly the kind of value whose
+     * provenance nobody re-checks at read time.
      *
      * @param metadataXml the S100 dataset discovery metadata XML content
      * @return The unmarshalled S100 dataset discovery metadata object
-     * @throws JAXBException for errors in the unmarshalling operation
+     * @throws JAXBException for errors in the unmarshalling operation, including a
+     *                       document that declares a DOCTYPE or an external entity
      */
     public static S100DatasetDiscoveryMetadata unmarshallS100DatasetDiscoveryMetadata(String metadataXml) throws JAXBException {
         // Create the JAXB objects
         JAXBContext jaxbContext = catalogueJaxbContext();
         Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
 
-        // Transform the S100 dataset discovery metadata content into an input stream
-        ByteArrayInputStream is = new ByteArrayInputStream(metadataXml.getBytes(StandardCharsets.UTF_8));
+        // Transform the S100 dataset discovery metadata content into a hardened source
+        SAXSource source = SecureXmlSource.of(metadataXml.getBytes(StandardCharsets.UTF_8));
 
         // And translate
-        return (S100DatasetDiscoveryMetadata) JAXBIntrospector.getValue(jaxbUnmarshaller.unmarshal(is));
+        return (S100DatasetDiscoveryMetadata) JAXBIntrospector.getValue(jaxbUnmarshaller.unmarshal(source));
     }
 
     /**

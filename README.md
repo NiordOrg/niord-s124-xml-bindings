@@ -16,7 +16,7 @@ S-124 geometry, and a builder for signed exchange-set ZIP files.
 
 The S-124 artifact name contains `2_0_1`, but its schema and Java API target
 **S-124 2.0.0**. The Maven library version is separate: the POMs currently declare
-`0.2.0`. S-124 depends on the S-100 module.
+`0.3.0`. S-124 depends on the S-100 module.
 
 ## Build and use locally
 
@@ -41,7 +41,7 @@ After the local install, add this dependency inside your application's
 <dependency>
     <groupId>dma.dk.niord.s100.xml-bindings</groupId>
     <artifactId>s124-2_0_1-xml-bindings</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 

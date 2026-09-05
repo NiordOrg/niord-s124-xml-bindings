@@ -2,9 +2,7 @@ package dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util;
 
 import static java.util.Objects.requireNonNull;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.StringReader;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
@@ -12,15 +10,20 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 
+import javax.xml.XMLConstants;
 import javax.xml.transform.OutputKeys;
-import javax.xml.transform.Source;
 import javax.xml.transform.Transformer;
 import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.sax.SAXSource;
 import javax.xml.transform.stream.StreamResult;
-import javax.xml.transform.stream.StreamSource;
 
 import org.grad.eNav.s100.adapters.DateAdapter;
 import org.grad.eNav.s100.adapters.OffsetDateTimeAdapter;
+import org.grad.eNav.s100.utils.SecureXmlSource;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.Dataset;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.impl.DatasetImpl;
@@ -47,8 +50,6 @@ public final class S124Utils {
             throw new ExceptionInInitializerError(e);
         }
     }
-
-    private static final TransformerFactory TRANSFORMER_FACTORY = TransformerFactory.newInstance();
 
     private S124Utils() {
     }
@@ -111,12 +112,27 @@ public final class S124Utils {
         return out.toString(StandardCharsets.UTF_8);
     }
 
+    /**
+     * Reads an S-124 dataset back from its XML form.
+     * <p/>
+     * This is the library's public read path for a dataset GML, and the dataset it is handed is
+     * routinely a foreign one - the whole point of S-124 is that warnings travel between
+     * producers and consumers - so it is parsed through {@link SecureXmlSource}, which refuses a
+     * document type declaration. An S-124 dataset is an XML Schema instance document (S-124
+     * Ed 2.0.0, clause 8.1.1) and never legitimately carries one.
+     * <p/>
+     * No schema or conformance checking happens here: use {@link S124XsdValidator#validate} and
+     * {@link S124DatasetValidator#validate} on a dataset whose conformance matters.
+     *
+     * @param xml the marshalled dataset
+     * @return the unmarshalled dataset
+     * @throws JAXBException if the document cannot be read, including when it declares a DOCTYPE
+     *                       or an external entity
+     */
     public static Dataset unmarshallS124(String xml) throws JAXBException {
         requireNonNull(xml, "xml is null");
         Unmarshaller unmarshaller = JAXB_CONTEXT.createUnmarshaller();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8));
-        Object value = JAXBIntrospector.getValue(unmarshaller.unmarshal(in));
-        return (Dataset) value;
+        return (Dataset) JAXBIntrospector.getValue(unmarshaller.unmarshal(SecureXmlSource.of(xml)));
     }
 
     /**
@@ -163,12 +179,38 @@ public final class S124Utils {
         }
     }
 
+    /**
+     * Re-indents an XML document, for logging it or putting it in front of a person.
+     * <p/>
+     * The document is parsed through {@link SecureXmlSource}, exactly as {@link #unmarshallS124}
+     * is, because the reason to pretty-print a dataset on this class is normally that it just
+     * arrived from another producer - and an identity transform would otherwise copy a resolved
+     * external entity straight into the string returned here. An S-124 dataset is an XML Schema
+     * instance document (S-124 Ed 2.0.0, clause 8.1.1) and never legitimately carries a DOCTYPE.
+     *
+     * @param input the XML document to re-indent
+     * @return the same document, indented by four spaces
+     * @throws RuntimeException if the document cannot be parsed or written, including when it
+     *                          declares a DOCTYPE or an external entity
+     */
     public static String prettyPrint(String input) {
+        requireNonNull(input, "input is null");
         try {
-            Source xmlInput = new StreamSource(new StringReader(input));
+            SAXSource xmlInput = SecureXmlSource.of(input);
+            // Xerces' default handler writes a fatal parse error to stderr before the parse
+            // unwinds. The refusal is already reported to the caller as the exception below, and a
+            // library has no business printing a caller's document problem to the console.
+            xmlInput.getXMLReader().setErrorHandler(RETHROW_PARSE_FAILURES);
             StringWriter stringWriter = new StringWriter();
             StreamResult xmlOutput = new StreamResult(stringWriter);
-            Transformer transformer = TRANSFORMER_FACTORY.newTransformer();
+            // Belt and braces: the source above already carries a reader that refuses the DOCTYPE,
+            // so these settings only matter if this ever transforms a raw StreamSource instead. A
+            // TransformerFactory is not documented as safe to share between threads, hence per call.
+            TransformerFactory transformerFactory = TransformerFactory.newInstance();
+            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            Transformer transformer = transformerFactory.newTransformer();
             transformer.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
             transformer.setOutputProperty(OutputKeys.METHOD, "xml");
             transformer.setOutputProperty(OutputKeys.INDENT, "yes");
@@ -180,4 +222,17 @@ public final class S124Utils {
             throw new RuntimeException(e);
         }
     }
+
+    /**
+     * Reports a parse failure by throwing it, rather than by printing it and throwing it.
+     * DefaultHandler already ignores warnings and rethrows fatal errors, which is every case a
+     * non-validating parse can raise; only the recoverable-error case has to be added.
+     */
+    private static final ErrorHandler RETHROW_PARSE_FAILURES = new DefaultHandler() {
+        @Override
+        public void error(SAXParseException e) throws SAXException {
+            throw e;
+        }
+    };
+
 }

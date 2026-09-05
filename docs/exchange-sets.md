@@ -42,6 +42,11 @@ organization, contact details and registered producer code in an integration. At
 dataset or cancellation is required. The producer code must contain exactly
 four alphanumeric characters.
 
+Producers whose datasets may later have to be withdrawn should call `toExchangeSet()`
+instead. It returns the same ZIP plus the catalogue entry published for each dataset,
+which is what a later cancellation has to reproduce; see
+[Cancel a previously delivered dataset](#cancel-a-previously-delivered-dataset).
+
 Producer contact information is mandatory for dataset metadata. Supply an email
 address, phone number, postal address fields, `onlineResource(...)` or
 `contactInstructions(...)`; the example email above is a placeholder.
@@ -177,10 +182,51 @@ previous dataset. It retains the original filename, signature and mandatory
 metadata, sets its purpose to cancellation and ships no replacement dataset file.
 
 Create `new S124ExchangeSetFactory.Cancellation(originalMetadata, issueDate)` and
-pass the entries to `builder.cancellations(...)`. `originalMetadata` is the
-`S100DatasetDiscoveryMetadata` from the original catalogue. A cancellation-only
+pass the entries to `builder.cancellations(...)`. A cancellation-only
 set still needs the organization, producer code, certificate and signer because
 the new catalogue must be signed.
+
+### Capture the entry when you publish
+
+`originalMetadata` is the entry the original catalogue published, so capture it at
+publish time and store it:
+
+```java
+// publish
+S124ExchangeSetFactory.ExchangeSet set = factory.toExchangeSet();
+Files.write(path, set.bytes());
+S124ExchangeSetFactory.PublishedDataset published = set.datasets().get(0);
+row.setFileName(published.fileName());
+row.setDiscoveryMetadata(
+        S124ExchangeSetFactory.discoveryMetadataToXml(published.discoveryMetadata()));
+row.setSignatureCertificates(String.join("\n", set.signingCertificatePems()));
+
+// cancel, months and one certificate rotation later
+var cancellation = new S124ExchangeSetFactory.Cancellation(
+        S124ExchangeSetFactory.discoveryMetadataFromXml(row.getDiscoveryMetadata()),
+        LocalDate.now(ZoneOffset.UTC),
+        List.of(row.getSignatureCertificates().split("\n")));
+```
+
+`set.datasets()` has one entry per dataset, at the index that dataset has in
+`datasets(...)`, and `published.dataset()` is the object you passed in — the file
+name is not predictable at publish time, so join on the dataset rather than on the
+name.
+
+**What to store.** The entry is a schema-defined `S100_DatasetDiscoveryMetadata`
+document of roughly 4.5 kB, so the column must be CLOB/TEXT, not VARCHAR. It
+declares and is decoded as UTF-8, so the column has to hold the full repertoire —
+a Latin-1 column will not round-trip the free text (`producingAgency`, the
+description and the comment) that clause 17-4.4.1 makes the cancellation reproduce.
+Never
+hash it or use it as an idempotency key: JAXB chooses the namespace prefixes, so
+the exact bytes may differ across versions for an identical entry — compare the
+parsed entries instead. Always store the signing chain too, and always pass it
+rather than relying on the empty `certificatePems` default: the entry records only
+a catalogue-scoped certificate id, and the default assumes the certificate that
+signed the original is still the current one. `certificatePems` is a list because
+a domain-coordinator chain has more than one element; the newline join above is one
+workable single-column convention.
 
 The two-argument constructor assumes the original signature used the current
 Data Server certificate. If the signing certificate has changed, use the overload
@@ -191,11 +237,34 @@ allows the factory to preserve signature chains and update certificate reference
 within the new catalogue.
 
 Retain the original catalogue entry and the certificate chain that signed it
-together. The factory copies the entry and never modifies it, so the same record
-can be reused in later exchange sets under whichever certificate is then current.
-Passing the current certificate as the original chain is harmless: identical
-certificates are carried once, and the reused signature references the current
-entry.
+together — `ExchangeSet` hands both over from the same build. The factory copies
+the entry and never modifies it, so the same record can be reused in later
+exchange sets under whichever certificate is then current. Passing the current
+certificate as the original chain is harmless: identical certificates are carried
+once, and the reused signature references the current entry.
+
+### Back-fill from an archived exchange set
+
+`S124ExchangeSetFactory.readDiscoveryMetadata(zipBytes)` returns the
+`purpose=newDataset` entries of an already-built exchange set, keyed by the
+`124….GML` file name a producer already stores. Use it for warnings published
+before `toExchangeSet()` existed: the shipped catalogue is the only faithful record
+of the original, and the entry must be reproduced unchanged. It is not the
+publish-time path — it re-parses what the factory had in hand, and it can only tell
+datasets apart by file name.
+
+The catalogue is parsed as foreign XML: `SecureXmlSource` refuses a `<!DOCTYPE>`
+outright, so an external entity cannot read a file off the reading host or make it
+issue a request, and a billion-laughs expansion cannot be declared. A conformant
+catalogue never carries a DOCTYPE (S-100 Part 17, clause 17-4.2), so nothing
+legitimate is refused; one that does fails as an `ExchangeSetException`. The same
+applies to `discoveryMetadataFromXml(...)`, `S124Utils.unmarshallS124(...)`,
+`S124Utils.prettyPrint(...)` and `S124XsdValidator.validate(...)`.
+
+What is **not** covered: the ZIP is not size-bounded. `CATALOG.XML` is read with
+`readAllBytes()`, so a decompression bomb still exhausts the heap of whatever reads
+it. Bound the archive where you accept it — only you know what a legitimate exchange
+set weighs in your deployment.
 
 ### Migrating from 0.0.12
 
@@ -203,9 +272,11 @@ entry.
 signature objects whose `certificateRef` the caller had to set to the factory's
 internal `cer1`. That constructor is gone, and it never survived a certificate
 rotation. Pass the retained `S100DatasetDiscoveryMetadata` entry instead, together
-with the chain that signed it; the factory allocates every certificate id and
-rewrites the references itself. Signers must return DER-encoded signatures (see
-above); the factory now rejects any other form.
+with the chain that signed it. The retained entry comes from `toExchangeSet()` at
+publish time, or from `readDiscoveryMetadata(...)` for sets already published; the
+factory allocates every certificate id and rewrites the references itself. Signers
+must return DER-encoded signatures (see above); the factory now rejects any other
+form.
 
 See the [exchange-set tests](../s-124/src/test/java/dk/dma/niord/s100/xmlbindings/s124/v2_0_0/exchangesets/S124ExchangeSetFactoryTest.java)
 for cancellation, rollover and certificate-chain examples.

@@ -17,7 +17,9 @@
 package org.grad.eNav.s100.utils;
 
 import dk.dma.niord.s100.catalog._5_2.*;
+import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBException;
+import jakarta.xml.bind.Marshaller;
 import net.opengis.gml._3.*;
 import org.grad.eNav.s100.enums.MaintenanceFrequency;
 import org.grad.eNav.s100.enums.RoleCode;
@@ -31,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.*;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -765,5 +768,143 @@ class S100ExchangeSetUtilsTest {
                 "eastBoundLongitude must not round inward");
         assertTrue(box.getNorthBoundLatitude().getDecimal().doubleValue() >= north,
                 "northBoundLatitude must not round inward");
+    }
+
+    /**
+     * A single dataset discovery metadata entry is an XML root element in its own right, so it
+     * can be stored and read back separately from the exchange catalogue it was delivered in -
+     * which is what a producer has to do between publishing a dataset and cancelling it
+     * (S-100 Part 17, clause 17-4.4.1). The signature it carries, and the concrete
+     * S100_SE_SignatureOnData type of that signature, must survive the round trip: they are
+     * what the cancellation reuses.
+     *
+     * @throws JAXBException a JAXB exception thrown during the marshalling operations
+     */
+    @Test
+    void datasetDiscoveryMetadataRoundTripsOnItsOwn() throws JAXBException {
+        final S100DatasetDiscoveryMetadata metadata = this.signedDatasetDiscoveryMetadata();
+        final String xml = S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(metadata);
+
+        final S100DatasetDiscoveryMetadata result = S100ExchangeSetUtils.unmarshallS100DatasetDiscoveryMetadata(xml);
+
+        assertNotNull(result);
+        assertEquals(metadata.getFileName(), result.getFileName());
+        assertEquals(metadata.getDatasetID(), result.getDatasetID());
+        assertEquals(1, result.getDigitalSignatureValues().size());
+        final S100SEDigitalSignature signature = result.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue();
+        assertInstanceOf(S100SESignatureOnData.class, signature);
+        final S100SESignatureOnData signatureOnData = (S100SESignatureOnData) signature;
+        assertEquals("sig1", signatureOnData.getId());
+        assertEquals("CRT1", signatureOnData.getCertificateRef());
+        assertEquals(DataStatus.UNENCRYPTED, signatureOnData.getDataStatus());
+        assertArrayEquals("signature".getBytes(StandardCharsets.UTF_8), signatureOnData.getValue());
+        assertEquals(xml, S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(result));
+    }
+
+    /**
+     * The single argument overload formats its output, as the exchange catalogue one does. The
+     * unformatted form is the one to store, and the two parse to equivalent entries - so the two
+     * spellings must not be compared as strings.
+     *
+     * @throws JAXBException a JAXB exception thrown during the marshalling operations
+     */
+    @Test
+    void datasetDiscoveryMetadataMarshallingDefaultsToFormattedOutput() throws JAXBException {
+        final S100DatasetDiscoveryMetadata metadata = this.signedDatasetDiscoveryMetadata();
+
+        final String formatted = S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(metadata);
+        final String unformatted = S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(metadata, java.lang.Boolean.FALSE);
+
+        assertTrue(formatted.contains("\n"));
+        assertFalse(unformatted.contains("\n"));
+        assertTrue(unformatted.length() < formatted.length());
+        assertEquals(
+                S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(
+                        S100ExchangeSetUtils.unmarshallS100DatasetDiscoveryMetadata(formatted), java.lang.Boolean.FALSE),
+                S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(
+                        S100ExchangeSetUtils.unmarshallS100DatasetDiscoveryMetadata(unformatted), java.lang.Boolean.FALSE));
+    }
+
+    /**
+     * The catalogue's dataset entry, carrying the kind of signature a real exchange set does:
+     * an S100_SE_SignatureOnData, the realization S-100 Part 15, clause 15-8.11.3, gives a
+     * signature over a data resource.
+     */
+    private S100DatasetDiscoveryMetadata signedDatasetDiscoveryMetadata() {
+        final S100DatasetDiscoveryMetadata metadata = this.s100ExchangeCatalogue
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+        final S100SESignatureOnData signature = new S100SESignatureOnData();
+        signature.setId("sig1");
+        signature.setCertificateRef("CRT1");
+        signature.setDataStatus(DataStatus.UNENCRYPTED);
+        signature.setValue("signature".getBytes(StandardCharsets.UTF_8));
+        final S100DatasetDiscoveryMetadata.DigitalSignatureValue value =
+                new S100DatasetDiscoveryMetadata.DigitalSignatureValue();
+        value.setS100SEDigitalSignature(
+                new dk.dma.niord.s100.catalog._5_2.ObjectFactory().createS100SESignatureOnData(signature));
+        metadata.getDigitalSignatureValues().clear();
+        metadata.getDigitalSignatureValues().add(value);
+        return metadata;
+    }
+    /**
+     * The marshalling operations return the marshaller's own UTF-8 output decoded as UTF-8,
+     * not decoded with the platform default charset.
+     * <p/>
+     * This is what makes the marshal/unmarshal pair self inverse: the unmarshalling side
+     * re-encodes the string as UTF-8, and S124ExchangeSetFactory writes the catalogue string
+     * into CATALOG.XML as UTF-8, so a platform default decode would corrupt every non-ASCII
+     * character on a JVM whose default charset is not UTF-8. S-100 Part 17, clause 17-4.4.1,
+     * requires a cancellation to reproduce the cancelled dataset's metadata fields, so a
+     * stored entry that comes back mangled is re-signed into the cancelling catalogue.
+     * <p/>
+     * The comparison is against the bytes an independent marshaller produces, which is the
+     * assertion that actually detects a platform default decode; the round trip assertions
+     * only detect it when the suite itself runs on a non-UTF-8 default charset.
+     *
+     * @throws JAXBException a JAXB exception thrown during the marshalling operations
+     */
+    @Test
+    void marshallingDecodesTheMarshallersUtf8Output() throws JAXBException {
+        // Free text a Danish producer really does put in a warning
+        final String danish = "Søfartsstyrelsen - Øresund, Læsø og Ærø";
+        final S100DatasetDiscoveryMetadata metadata = this.signedDatasetDiscoveryMetadata();
+        metadata.setDatasetID(danish);
+        metadata.setComment(S100ExchangeSetUtils.createCharacterStringPropertyType(danish));
+
+        // The single entry form - what a producer stores between publishing and cancelling
+        final String entryXml = S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(metadata);
+        assertEquals(new String(marshalToBytes(metadata, java.lang.Boolean.TRUE), StandardCharsets.UTF_8), entryXml);
+        final S100DatasetDiscoveryMetadata entry = S100ExchangeSetUtils.unmarshallS100DatasetDiscoveryMetadata(entryXml);
+        assertEquals(danish, entry.getDatasetID());
+        assertEquals(danish, entry.getComment().getCharacterString().getValue());
+
+        // And the whole catalogue, which carries the same entry
+        final String catalogueXml = S100ExchangeSetUtils.marshalS100ExchangeSetCatalogue(this.s100ExchangeCatalogue);
+        assertEquals(new String(marshalToBytes(this.s100ExchangeCatalogue, java.lang.Boolean.TRUE), StandardCharsets.UTF_8), catalogueXml);
+        final S100ExchangeCatalogue catalogue = S100ExchangeSetUtils.unmarshallS100ExchangeSetCatalogue(catalogueXml);
+        assertEquals(danish, catalogue.getDatasetDiscoveryMetadata()
+                .getS100DatasetDiscoveryMetadatas().get(0).getDatasetID());
+        assertEquals(danish, catalogue.getDatasetDiscoveryMetadata()
+                .getS100DatasetDiscoveryMetadatas().get(0).getComment().getCharacterString().getValue());
+    }
+
+    /**
+     * Marshals through a JAXB context built independently of the one the utilities cache, so
+     * that the assertion above compares against bytes rather than against the same code path.
+     */
+    private static JAXBContext independentContext;
+
+    private static byte[] marshalToBytes(Object object, java.lang.Boolean format) throws JAXBException {
+        if (independentContext == null) {
+            independentContext = JAXBContext.newInstance(
+                    S100ExchangeCatalogue.class.getPackageName(),
+                    S100ExchangeCatalogue.class.getClassLoader());
+        }
+        final Marshaller marshaller = independentContext.createMarshaller();
+        marshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, format);
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        marshaller.marshal(object, out);
+        return out.toByteArray();
     }
 }

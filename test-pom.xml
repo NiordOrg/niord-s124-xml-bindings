@@ -28,7 +28,7 @@
         <dependency>
             <groupId>com.github.NiordOrg.niord-s124-xml-bindings</groupId>
             <artifactId>s124-2_0_1-xml-bindings</artifactId>
-            <version>0.1.0</version>
+            <version>0.2.0</version>
         </dependency>
     </dependencies>
 </project>

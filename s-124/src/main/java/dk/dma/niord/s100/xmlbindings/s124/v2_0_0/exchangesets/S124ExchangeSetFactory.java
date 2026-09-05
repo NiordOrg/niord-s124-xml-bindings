@@ -740,7 +740,7 @@ public final class S124ExchangeSetFactory {
 
     /**
      * Why {@code signature} is not a DER {@code SEQUENCE} of two P-384 sized positive
-     * {@code INTEGER}s, or {@code null} when it is one.
+     * {@code INTEGER}s in their shortest encoding, or {@code null} when it is one.
      */
     private static String derEcdsaSequenceProblem(byte[] signature) {
         if (signature == null || signature.length == 0) {
@@ -775,6 +775,13 @@ public final class S124ExchangeSetFactory {
             }
             if ((signature[offset + 2] & 0x80) != 0) {
                 return "INTEGER " + name + " is negative, which an ECDSA signature value never is";
+            }
+            // DER admits one encoding per integer: a leading 0x00 is allowed only as the sign
+            // byte before a magnitude whose high bit is set. Anything longer is BER, and Java's
+            // verifier refuses it outright ("Invalid encoding for signature") rather than
+            // reading the same number, so it must not be packaged either.
+            if (length > 1 && signature[offset + 2] == 0x00 && (signature[offset + 3] & 0x80) == 0) {
+                return "INTEGER " + name + " carries a redundant leading zero byte, which DER forbids";
             }
             offset += 2 + length;
         }

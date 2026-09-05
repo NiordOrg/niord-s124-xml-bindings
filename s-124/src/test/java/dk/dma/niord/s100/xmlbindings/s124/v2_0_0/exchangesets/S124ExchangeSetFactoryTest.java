@@ -630,6 +630,84 @@ class S124ExchangeSetFactoryTest {
                 .hasMessageContaining("SHA384withECDSA");
     }
 
+    /**
+     * DER admits exactly one encoding of each integer: a leading 0x00 byte is allowed only as
+     * the sign byte before a magnitude whose high bit is set. A signer that pads r or s beyond
+     * that produces well-formed BER that Java's verifier refuses outright ("Invalid encoding for
+     * signature") instead of reading the same number, so the factory must refuse it too rather
+     * than package a signature nothing can check.
+     */
+    @Test
+    void rejectsASignatureWhoseIntegerCarriesRedundantLeadingZeroPadding() {
+        // The premise, with real cryptography: the padded form of a valid signature does not verify.
+        SigningIdentityFixture identity = SigningIdentityFixture.selfSigned("Data Server");
+        byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
+        assertThat(SigningIdentityFixture.verify(identity.publicKey(), payload, identity.sign(payload))).isTrue();
+        assertThat(SigningIdentityFixture.verify(identity.publicKey(), payload, withPaddedR(identity.sign(payload))))
+                .as("Java refuses the padded encoding").isFalse();
+
+        // A deterministic padded value: r is 48 bytes whose first is 0x00 and whose second has no high bit.
+        byte[] padded = dummySignature((byte) 0x11, (byte) 0x22);
+        padded[4] = 0x00;
+        assertThatThrownBy(() -> exchangeSetSignedWith((alg, p) -> padded))
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("INTEGER r")
+                .hasMessageContaining("redundant leading zero");
+
+        // And a real signer that pads its output is caught the same way.
+        assertThatThrownBy(() -> exchangeSetSignedWith((alg, p) -> withPaddedR(identity.sign(p))))
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("INTEGER r");
+    }
+
+    /**
+     * The one leading zero DER does require - the sign byte before a magnitude with its high bit
+     * set, which about half of all P-384 signatures need - is not padding and must pass.
+     */
+    @Test
+    void acceptsTheSignByteDerRequiresBeforeAHighBitMagnitude() throws Exception {
+        byte[] signature = new byte[2 + 51 + 50];
+        signature[0] = 0x30;
+        signature[1] = (byte) 101;
+        signature[2] = 0x02;
+        signature[3] = 49;
+        signature[4] = 0x00;
+        Arrays.fill(signature, 5, 53, (byte) 0x9A);
+        signature[53] = 0x02;
+        signature[54] = 48;
+        Arrays.fill(signature, 55, 103, (byte) 0x22);
+
+        byte[] zip = exchangeSetSignedWith((alg, payload) -> signature);
+
+        assertThat(dataSignatureOf(firstEntryOf(zip)).getValue()).isEqualTo(signature);
+    }
+
+    /** A one-dataset exchange set signed by {@code signer} under the test certificate. */
+    private static byte[] exchangeSetSignedWith(S124Signer signer) {
+        return S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.encoding")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer(signer)
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+    }
+
+    /** {@code signature} with one redundant 0x00 prepended to the content of INTEGER r: well-formed BER, not DER. */
+    private static byte[] withPaddedR(byte[] signature) {
+        int rLength = signature[3] & 0xFF;
+        byte[] padded = new byte[signature.length + 1];
+        padded[0] = 0x30;
+        padded[1] = (byte) (signature[1] + 1);
+        padded[2] = 0x02;
+        padded[3] = (byte) (rLength + 1);
+        padded[4] = 0x00;
+        System.arraycopy(signature, 4, padded, 5, signature.length - 4);
+        return padded;
+    }
+
     /** Bytes that are not a well-formed SEQUENCE at all are rejected too, naming the signed resource. */
     @Test
     void rejectsSignatureBytesThatAreNotADerSequence() {

@@ -27,7 +27,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 import javax.security.auth.x500.X500Principal;
@@ -45,6 +47,7 @@ import org.locationtech.jts.geom.PrecisionModel;
 import dk.dma.niord.s100.catalog._5_2.DataStatus;
 import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100EncodingFormat;
+import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
 import dk.dma.niord.s100.catalog._5_2.S100ProductSpecification;
 import dk.dma.niord.s100.catalog._5_2.S100Purpose;
 import dk.dma.niord.s100.catalog._5_2.S100SECertificateContainerType;
@@ -81,15 +84,27 @@ import jakarta.xml.bind.Marshaller;
  *
  * <p>Usage:</p>
  * <pre>{@code
- * byte[] zip = S124ExchangeSetFactory.builder()
+ * S124ExchangeSetFactory.ExchangeSet set = S124ExchangeSetFactory.builder()
  *         .datasets(datasets)
  *         .organization("Danish Maritime Authority")
  *         .producerCode("DK00")
  *         .certificatePem(pem)
  *         .signer((alg, payload) -> ecdsaSign(privateKey, payload))
  *         .build()
- *         .toBytes();
+ *         .toExchangeSet();
+ *
+ * deliver(set.bytes());
+ * for (S124ExchangeSetFactory.PublishedDataset published : set.datasets()) {
+ *     store(published.dataset(),
+ *           S124ExchangeSetFactory.discoveryMetadataToXml(published.discoveryMetadata()),
+ *           set.signingCertificatePems());
+ * }
  * }</pre>
+ *
+ * <p>The stored entry is what a later fileless cancellation reproduces (S-100 Part 17, clause
+ * 17-4.4.1) and the stored chain is what authenticates its reused signature once the current
+ * certificate has moved on (S-100 Part 15, clause 15-8.7); see {@link Cancellation}.
+ * {@link #toBytes()} is the same build with both dropped.</p>
  *
  * <p>The signer returns each signature in the form S-100 Part 15, clause 15-8.4, embeds - the
  * ASN.1 DER {@code SEQUENCE} of the ECDSA integers r and s, as {@code java.security.Signature}
@@ -223,6 +238,12 @@ public final class S124ExchangeSetFactory {
     private static final String CATALOG_FILE_NAME = "CATALOG.XML";
     private static final String CATALOG_XML = ROOT_DIR + CATALOG_FILE_NAME;
     private static final String CATALOG_SIGN = ROOT_DIR + "CATALOG.SIGN";
+    /**
+     * The form a dataset file name takes in the catalogue, whose fileName element is typed
+     * {@code xs:anyURI} - and which S-100 Part 17, clause 17-4.4.1, has a cancellation reproduce
+     * verbatim, so the prefix is part of the value a cancelled dataset is identified by.
+     */
+    private static final String FILE_URI_PREFIX = "file:/";
 
     private final Builder cfg;
 
@@ -234,11 +255,39 @@ public final class S124ExchangeSetFactory {
         return new Builder();
     }
 
-    /** Build the exchange set and return it as a ZIP byte array. */
-    public byte[] toBytes() {
+    /**
+     * Builds the exchange set: the ZIP, together with the discovery-metadata entry published for
+     * each dataset - the record a producer has to keep in order to withdraw that dataset later,
+     * because S-100 Part 17, clause 17-4.4.1, builds a fileless cancellation by reproducing the
+     * original entry "with all other mandatory metadata fields also set to the same values as the
+     * original, with the exception of the issueDate".
+     * <p/>
+     * Both come back from the one call, and there is no accessor to fetch the entries afterwards,
+     * because the factory holds no state across calls: a second build is a different exchange set.
+     * It re-stamps every {@code metadataDateStamp} and the catalogue {@code dateTime} from the
+     * current UTC instant, restarts the signature counter at {@code sig1} and asks the signer for
+     * fresh signatures - ECDSA is randomised - and re-draws a random unique code for the clause
+     * 17-4.3 file name of any dataset that declares neither a {@code gml:id} nor a
+     * {@code datasetFileIdentifier}. An entry recovered from a second build can therefore name a
+     * file the delivered exchange set never contained, and clause 17-4.4.1 identifies the dataset
+     * to withdraw by exactly that name. The failure would be silent, because a dataset that does
+     * declare a {@code gml:id} yields a perfectly usable entry from the same code path.
+     * <p/>
+     * The call costs no more than {@link #toBytes()}: the entries handed over are the objects that
+     * were marshalled into {@code CATALOG.XML}, not a re-parse of it.
+     *
+     * @return the exchange set ZIP and the catalogue entry published for each dataset
+     * @throws ExchangeSetException     if the exchange set cannot be assembled, or the content to
+     *                                  package violates a hard S-124 limit
+     * @throws S124ConformanceException if a dataset breaks a rule of the S-124 product
+     *                                  specification, checked before anything is signed
+     */
+    public ExchangeSet toExchangeSet() {
         try {
             List<DatasetFile> datasetFiles = marshalDatasets();
-            String catalogXml = buildCatalogueXml(datasetFiles);
+            S100DatasetDiscoveryMetadata[] published =
+                    new S100DatasetDiscoveryMetadata[datasetFiles.size()];
+            String catalogXml = buildCatalogueXml(datasetFiles, published);
             byte[] catalogBytes = catalogXml.getBytes(StandardCharsets.UTF_8);
             byte[] catalogSig = buildCatalogueSignature(catalogBytes);
 
@@ -255,7 +304,9 @@ public final class S124ExchangeSetFactory {
                 putFileEntry(zos, CATALOG_XML, catalogBytes);
                 putFileEntry(zos, CATALOG_SIGN, catalogSig);
             }
-            return baos.toByteArray();
+            return new ExchangeSet(baos.toByteArray(), publishedDatasets(datasetFiles, published),
+                    Stream.concat(Stream.of(cfg.certificatePem), cfg.intermediateCertificatePems.stream())
+                            .toList());
         } catch (ExchangeSetException | S124ConformanceException e) {
             // Both already name the artefact and the clause they failed on; wrapping them
             // in a generic "failed to build" would bury that behind a cause chain.
@@ -263,6 +314,303 @@ public final class S124ExchangeSetFactory {
         } catch (Exception e) {
             throw new ExchangeSetException("Failed to build S-124 exchange set", e);
         }
+    }
+
+    /**
+     * Pairs each packaged dataset with the catalogue entry captured for it.
+     * <p/>
+     * The pairing is checked rather than assumed: a producer that persisted an entry naming a file
+     * the exchange set does not contain would hold evidence of something it never sent, and clause
+     * 17-4.4.1 would later cancel that file name. It is the one silent failure mode this hand-over
+     * has, so it is made loud.
+     */
+    private static List<PublishedDataset> publishedDatasets(List<DatasetFile> datasetFiles,
+            S100DatasetDiscoveryMetadata[] published) {
+        List<PublishedDataset> result = new ArrayList<>(datasetFiles.size());
+        for (int i = 0; i < datasetFiles.size(); i++) {
+            DatasetFile df = datasetFiles.get(i);
+            S100DatasetDiscoveryMetadata entry = published[i];
+            String expected = FILE_URI_PREFIX + df.fileName;
+            if (entry == null || !expected.equals(entry.getFileName())) {
+                throw new ExchangeSetException(String.format(
+                        "Internal invariant violated: the catalogue entry captured for the dataset "
+                                + "packaged as %s names %s. The build fails rather than hand back a "
+                                + "record of a file the exchange set does not contain, which S-100 "
+                                + "Part 17, clause 17-4.4.1, would later cancel by that name",
+                        df.fileName, entry == null ? "nothing" : entry.getFileName()));
+            }
+            result.add(new PublishedDataset(df.dataset, df.fileName, entry));
+        }
+        return result;
+    }
+
+    /**
+     * Builds the exchange set and returns it as a ZIP byte array.
+     * <p/>
+     * The discovery-metadata entry that S-100 Part 17, clause 17-4.4.1, obliges a
+     * {@link Cancellation} to reproduce is built on this path and thrown away, so a producer whose
+     * datasets may later have to be withdrawn should call {@link #toExchangeSet()} instead, which
+     * is this same build with the entries kept.
+     */
+    public byte[] toBytes() {
+        return toExchangeSet().bytes();
+    }
+
+    /**
+     * An exchange set as built: the ZIP to deliver, and what a producer needs in order to
+     * withdraw any of the datasets in it later (S-100 Part 17, clause 17-4.4.1).
+     * <p/>
+     * Neither this record nor {@link PublishedDataset} has value equality. {@code byte[]} compares
+     * by identity and the catalogue bindings are generated without an equals plugin, so
+     * {@code S100DatasetDiscoveryMetadata} inherits {@code Object.equals}; the generated
+     * {@code equals}, {@code hashCode} and {@code toString} are therefore identity based and
+     * useless. Do not use either record as a map key or compare one with {@code equals}.
+     *
+     * @param bytes                  the exchange set ZIP, in the layout of S-100 Part 17, clause
+     *                               17-4.2. Handed over, not copied: the factory built the array,
+     *                               keeps no other reference to it and never reads it again, which
+     *                               is exactly what {@link #toBytes()} does today. A caller that
+     *                               modifies it modifies what a second {@code bytes()} call returns
+     * @param datasets               one entry per dataset, at the index that dataset has in
+     *                               {@link Builder#datasets(List)}; unmodifiable. Empty for a
+     *                               cancellation-only exchange set: a fileless cancellation
+     *                               publishes nothing, so there is nothing new to record - and the
+     *                               record of the dataset it withdraws stays valid and must not be
+     *                               discarded, because the same entry may be cancelled again in a
+     *                               later exchange set under a later certificate. Cancellation
+     *                               entries are deliberately absent: a {@code purpose=cancellation}
+     *                               entry withdraws a dataset rather than publishing one, and can
+     *                               never itself be the {@code original} of a further cancellation
+     * @param signingCertificatePems the chain that made every signature in this exchange set,
+     *                               signing certificate first - {@link Builder#certificatePem(String)}
+     *                               followed by {@link Builder#intermediateCertificatePems(List)},
+     *                               and never empty. It is exactly the list
+     *                               {@link Cancellation#certificatePems()} takes, and it is carried
+     *                               here rather than on each dataset because one build has one
+     *                               signing chain. It is carried at all because an entry records
+     *                               only the id its own catalogue gave the certificate
+     *                               ({@code certificateRef}), never the certificate: after a key
+     *                               rotation a producer holding only the entry can no longer
+     *                               satisfy S-100 Part 15, clause 15-8.7, which requires the
+     *                               cancelling exchange set to carry "all the certificates required
+     *                               to perform a full certificate path validation without any
+     *                               external access". Persist it beside the entry
+     */
+    public record ExchangeSet(byte[] bytes,
+                              List<PublishedDataset> datasets,
+                              List<String> signingCertificatePems) {
+        public ExchangeSet {
+            Objects.requireNonNull(bytes, "bytes must be set");
+            datasets = List.copyOf(datasets);
+            signingCertificatePems = List.copyOf(signingCertificatePems);
+        }
+    }
+
+    /**
+     * A dataset as it was published, together with the catalogue entry that published it.
+     * <p/>
+     * Two of the catalogue's XML adapters are lossy on the write path - times are formatted
+     * {@code HH:mm:ss} and date-times {@code uuuu-MM-dd'T'HH:mm:ss'Z'} - so the entry here can
+     * carry sub-second precision in {@code issueTime} and {@code temporalExtent} that the shipped
+     * {@code CATALOG.XML} does not. Nothing shipped, persisted or cancelled records the difference,
+     * since the same adapters truncate on every write path including
+     * {@link #discoveryMetadataToXml(S100DatasetDiscoveryMetadata)} and the copy {@link Cancellation}
+     * makes internally, but a caller comparing this object field by field against one read back
+     * from a catalogue must expect it.
+     * <p/>
+     * Like {@link ExchangeSet}, this record has no value equality; see there.
+     *
+     * @param dataset           the very object passed to {@link Builder#datasets(List)}, by
+     *                          identity. It is the join key, rather than the file name, because a
+     *                          caller cannot compute that name at publish time without
+     *                          reimplementing naming rules the factory owns: the unique code falls
+     *                          back to a random UUID for a dataset that declares no {@code gml:id},
+     *                          and a declared {@code datasetFileIdentifier} otherwise wins and has
+     *                          every non-alphanumeric character stripped from the id
+     * @param fileName          the bare S-100 Part 17, clause 17-4.3, name of the packaged file
+     *                          ({@code 124<producer code><unique code>.GML}): the ZIP entry name
+     *                          under {@code S100_ROOT/S-124/DATASET_FILES/} without that directory
+     *                          prefix and without the {@code file:/} prefix. Explicitly,
+     *                          {@code discoveryMetadata().getFileName()} is
+     *                          {@code "file:/" + fileName()}, because the catalogue element is
+     *                          typed {@code xs:anyURI} and clause 17-4.4.1 makes the cancellation
+     *                          reproduce that URI form verbatim. This is the only place the name
+     *                          can be read off for a dataset that declares neither a {@code gml:id}
+     *                          nor a {@code datasetFileIdentifier}
+     * @param discoveryMetadata the object that was marshalled into {@code CATALOG.XML} for this
+     *                          dataset, live and not copied. No defensive copy is made because the
+     *                          catalogue has already been serialized and signed by the time the
+     *                          object is handed over, so mutating it cannot alter the artefact, and
+     *                          {@link Cancellation} deep-copies the entry again before reproducing
+     *                          it - the same object may therefore be kept and reused across
+     *                          exchange sets. Persist it (see
+     *                          {@link #discoveryMetadataToXml(S100DatasetDiscoveryMetadata)}) and
+     *                          pass it back as {@link Cancellation#original()}
+     */
+    public record PublishedDataset(Dataset dataset, String fileName,
+                                   S100DatasetDiscoveryMetadata discoveryMetadata) {
+        public PublishedDataset {
+            Objects.requireNonNull(dataset, "dataset must be set");
+            Objects.requireNonNull(fileName, "fileName must be set");
+            Objects.requireNonNull(discoveryMetadata, "discoveryMetadata must be set");
+        }
+    }
+
+    /**
+     * Serializes a discovery-metadata entry, in the form to persist between publishing a dataset
+     * and cancelling it - so that the record outlives the exchange catalogue it came in, which
+     * S-100 Part 17, clause 17-4.4.1, forces on the producer of any S-100 product.
+     * <p/>
+     * The document is the schema-defined {@code S100_DatasetDiscoveryMetadata} element of the
+     * S-100 5.2.0 exchange catalogue namespace, not a form of this library's invention, and it
+     * carries the dataset's signature, its {@code certificateRef} and the concrete
+     * {@code S100_SE_SignatureOnData} type as an {@code xsi:type} - all of which
+     * {@link #discoveryMetadataFromXml(String)} restores. It is written unformatted because it
+     * exists for a database column: an entry measures around 4.5 kB this way against about 6 kB
+     * formatted, so the column has to be a CLOB or TEXT rather than a VARCHAR. Nothing is cached;
+     * the entry is marshalled on each call.
+     * <p/>
+     * JAXB assigns the namespace prefixes ({@code ns2}, {@code ns3}, ...) itself, so the exact
+     * bytes may differ between library or JAXB versions for an identical entry: never hash this
+     * string, use it as an idempotency key, or byte-compare values written by different versions -
+     * compare the parsed entries instead.
+     *
+     * @param metadata the entry to serialize, typically
+     *                 {@link PublishedDataset#discoveryMetadata()}
+     * @return the entry as an {@code S100_DatasetDiscoveryMetadata} XML document
+     * @throws ExchangeSetException if the entry cannot be marshalled. The failure is unchecked
+     *                              because reading and writing this entry is a step in building the
+     *                              next exchange set, and every caller of this factory already
+     *                              handles it; forcing a transactional service method to catch
+     *                              {@code JAXBException} in order to set a column is the ergonomic
+     *                              cost this method exists to remove
+     */
+    public static String discoveryMetadataToXml(S100DatasetDiscoveryMetadata metadata) {
+        try {
+            return S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(metadata, Boolean.FALSE);
+        } catch (JAXBException e) {
+            throw new ExchangeSetException("Failed to serialize the dataset's discovery metadata", e);
+        }
+    }
+
+    /**
+     * Reads back the entry a producer persisted with
+     * {@link #discoveryMetadataToXml(S100DatasetDiscoveryMetadata)}, ready to be handed to a
+     * {@link Cancellation}. Documents written through either JAXB context spelling of the
+     * catalogue bindings are accepted.
+     * <p/>
+     * The entry is <em>not</em> schema validated: the Part 17 exchange catalogue schema imports the
+     * ISO 19115-3 schemas, which this repository deliberately does not vendor, so validating here
+     * would need network access at cancel time - the same reason {@code CATALOG.XML} itself is
+     * checked only in this project's own test suite (see the note on {@code validateAgainstSchema}).
+     * A mangled column therefore surfaces late, as a signed but schema-invalid {@code CATALOG.XML};
+     * the {@link Cancellation} constructor catches only the two cases it can see, an entry without
+     * a file name and one without a signature.
+     *
+     * @param metadataXml the persisted {@code S100_DatasetDiscoveryMetadata} document
+     * @return the entry, ready to be reproduced as {@link Cancellation#original()}
+     * @throws ExchangeSetException if the persisted entry cannot be read
+     */
+    public static S100DatasetDiscoveryMetadata discoveryMetadataFromXml(String metadataXml) {
+        try {
+            return S100ExchangeSetUtils.unmarshallS100DatasetDiscoveryMetadata(metadataXml);
+        } catch (JAXBException e) {
+            throw new ExchangeSetException(
+                    "Failed to read the persisted dataset discovery metadata entry", e);
+        }
+    }
+
+    /**
+     * Recovers the discovery-metadata entries of an exchange set that has already been built,
+     * keyed by the clause 17-4.3 file name each dataset was packaged under.
+     * <p/>
+     * This exists to back-fill the records of datasets published before {@link #toExchangeSet()}
+     * did: every S-124 warning already published carries no persisted entry, a NAVWARN can be in
+     * force for months, and the shipped catalogue is the only faithful record of the original - a
+     * producer's own columns cannot reconstruct the producing-agency block, {@code issueTime} and
+     * {@code comment} that S-100 Part 17, clause 17-4.4.1, requires to be reproduced unchanged, and
+     * rebuilding the entry from the current configuration would contradict that clause. It is not
+     * the publish-time path: it re-parses what the factory had in hand, and it cannot tell two
+     * datasets apart other than by the file name. Use {@link #toExchangeSet()} when publishing.
+     * <p/>
+     * Only the {@code purpose=newDataset} entries are returned, because a cancellation entry
+     * withdraws a dataset rather than publishing one, can never itself be the {@code original} of a
+     * further cancellation, and shares the file name of the entry it cancels - so returning it
+     * would collide on the key. They come back in catalogue order, in an unmodifiable map keyed by
+     * the bare file name, the same string {@link PublishedDataset#fileName()} carries: the
+     * {@code file:/} prefix of the catalogue's {@code xs:anyURI} value is stripped when present,
+     * and a foreign producer's value that does not use that form is taken unchanged. An entry
+     * recovered here and one taken from {@link PublishedDataset#discoveryMetadata()} are
+     * interchangeable as a {@link Cancellation#original()}. An empty map is a legitimate result:
+     * a cancellation-only exchange set publishes no dataset.
+     * <p/>
+     * The input is expected to be the producer's own archive. The catalogue is unmarshalled with a
+     * default JAXB unmarshaller and is not hardened against hostile XML.
+     *
+     * @param exchangeSetZip an exchange set ZIP as built by this factory
+     * @return the published datasets' entries, keyed by packaged file name, in catalogue order
+     * @throws ExchangeSetException if the ZIP cannot be read, holds no {@value #CATALOG_XML}, or
+     *                              carries a catalogue that cannot be read or that names the same
+     *                              dataset file twice
+     */
+    public static Map<String, S100DatasetDiscoveryMetadata> readDiscoveryMetadata(byte[] exchangeSetZip) {
+        String catalogXml = null;
+        try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(exchangeSetZip))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (CATALOG_XML.equals(entry.getName())) {
+                    // The write path encodes the catalogue as UTF-8, so it is decoded as UTF-8
+                    // rather than in whatever the reading JVM defaults to.
+                    catalogXml = new String(zis.readAllBytes(), StandardCharsets.UTF_8);
+                    break;
+                }
+            }
+        } catch (java.io.IOException e) {
+            throw new ExchangeSetException("Failed to read the exchange set ZIP", e);
+        }
+        if (catalogXml == null) {
+            throw new ExchangeSetException(String.format(
+                    "The exchange set holds no %s, so it carries no discovery metadata to recover; "
+                            + "S-100 Part 17, clause 17-4.2, puts the exchange catalogue there",
+                    CATALOG_XML));
+        }
+        S100ExchangeCatalogue catalogue;
+        try {
+            catalogue = S100ExchangeSetUtils.unmarshallS100ExchangeSetCatalogue(catalogXml);
+        } catch (JAXBException e) {
+            throw new ExchangeSetException(String.format(
+                    "Failed to read the %s of the exchange set", CATALOG_XML), e);
+        }
+        Map<String, S100DatasetDiscoveryMetadata> byFileName = new LinkedHashMap<>();
+        List<S100DatasetDiscoveryMetadata> entries =
+                Optional.ofNullable(catalogue.getDatasetDiscoveryMetadata())
+                        .map(S100ExchangeCatalogue.DatasetDiscoveryMetadata::getS100DatasetDiscoveryMetadatas)
+                        .orElseGet(Collections::emptyList);
+        for (S100DatasetDiscoveryMetadata entry : entries) {
+            if (entry.getPurpose() != S100Purpose.NEW_DATASET) {
+                continue;
+            }
+            String fileName = entry.getFileName();
+            if (fileName == null || fileName.isBlank()) {
+                throw new ExchangeSetException(String.format(
+                        "The %s carries a newDataset entry without a file name, so the dataset it "
+                                + "published cannot be identified; S-100 Part 17, clause 17-4.4.1, "
+                                + "cancels a dataset by exactly that name",
+                        CATALOG_XML));
+            }
+            // A foreign producer's catalogue need not spell the anyURI with the file:/ prefix
+            // this factory writes, so it is stripped only where it is present.
+            String bareName = fileName.startsWith(FILE_URI_PREFIX)
+                    ? fileName.substring(FILE_URI_PREFIX.length())
+                    : fileName;
+            if (byFileName.put(bareName, entry) != null) {
+                throw new ExchangeSetException(String.format(
+                        "The %s publishes two datasets as %s, but S-100 Part 17, clause 17-4.3, "
+                                + "requires all base dataset file names to be unique",
+                        CATALOG_XML, bareName));
+            }
+        }
+        return Collections.unmodifiableMap(byFileName);
     }
 
     private List<DatasetFile> marshalDatasets() throws JAXBException {
@@ -525,11 +873,8 @@ public final class S124ExchangeSetFactory {
      */
     private static S100DatasetDiscoveryMetadata copyOf(S100DatasetDiscoveryMetadata original) {
         try {
-            JAXBContext context = JAXBContext.newInstance(S100DatasetDiscoveryMetadata.class);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            context.createMarshaller().marshal(original, out);
-            return (S100DatasetDiscoveryMetadata) context.createUnmarshaller()
-                    .unmarshal(new ByteArrayInputStream(out.toByteArray()));
+            return S100ExchangeSetUtils.unmarshallS100DatasetDiscoveryMetadata(
+                    S100ExchangeSetUtils.marshalS100DatasetDiscoveryMetadata(original, Boolean.FALSE));
         } catch (JAXBException e) {
             throw new ExchangeSetException("Failed to copy the cancelled dataset's metadata", e);
         }
@@ -791,7 +1136,12 @@ public final class S124ExchangeSetFactory {
         return null;
     }
 
-    private String buildCatalogueXml(List<DatasetFile> datasetFiles) throws JAXBException, CertificateException {
+    /**
+     * Builds CATALOG.XML, storing the entry emitted for each dataset in {@code published} at the
+     * index that dataset has in {@code datasetFiles}.
+     */
+    private String buildCatalogueXml(List<DatasetFile> datasetFiles,
+            S100DatasetDiscoveryMetadata[] published) throws JAXBException, CertificateException {
         AtomicInteger signatureCounter = new AtomicInteger(1);
 
         S100ExchangeCatalogueBuilder catBuilder = new S100ExchangeCatalogueBuilder(
@@ -865,7 +1215,9 @@ public final class S124ExchangeSetFactory {
         }
         catBuilder.setCertificates(certificatesById).setCertificateIssuers(certificateIssuers);
 
-        for (DatasetFile df : datasetFiles) {
+        for (int datasetIndex = 0; datasetIndex < datasetFiles.size(); datasetIndex++) {
+            DatasetFile df = datasetFiles.get(datasetIndex);
+            int publishedIndex = datasetIndex;
             Geometry bbox = datasetExtent(df);
             DataSetIdentificationType ident = df.dataset.getDatasetIdentificationInformation();
             // The fallback is UTC rather than the JVM default zone, like every other date this
@@ -904,8 +1256,18 @@ public final class S124ExchangeSetFactory {
                     ? publication.toLocalTime()
                     : null;
 
-            catBuilder.addDatasetMetadata(builder -> s124Profile(builder
-                    .setFileName("file:/" + df.fileName)
+            // S100ExchangeCatalogueBuilder.build() invokes each provider once and adds what it
+            // returns to the catalogue unmutated, so the value captured here is the object that
+            // gets marshalled into CATALOG.XML - the invariant the test
+            // toExchangeSetReturnsTheEntryThatWasMarshalledIntoTheCatalogue locks. It is the
+            // profiled return value that is captured, not the builder's intermediate: should
+            // s124Profile ever start copying, the object handed to it would still carry the
+            // replacedData the S-124 clause 12.2.2 profile has no attribute for, and a later
+            // cancellation would reproduce a field the original never carried. The slot is
+            // indexed rather than appended to, so the positional contract of
+            // ExchangeSet.datasets() does not depend on when the builder invokes the provider.
+            catBuilder.addDatasetMetadata(builder -> published[publishedIndex] = s124Profile(builder
+                    .setFileName(FILE_URI_PREFIX + df.fileName)
                     .setDatasetID(datasetId(preamble, df))
                     .setDescription(datasetDescription(preamble))
                     .setCompressionFlag(false)
@@ -1329,7 +1691,11 @@ public final class S124ExchangeSetFactory {
      * all other mandatory metadata fields also set to the same values as the original, with
      * the exception of the issueDate" - so the original entry is supplied whole rather than
      * rebuilt field by field from the current configuration, which may have moved on since
-     * the dataset was issued. Take it from the catalogue that published the dataset.</p>
+     * the dataset was issued. Take it from {@link ExchangeSet#datasets()} at publish time -
+     * persisting it with {@link #discoveryMetadataToXml(S100DatasetDiscoveryMetadata)} and reading
+     * it back with {@link #discoveryMetadataFromXml(String)} - or, for a dataset published before
+     * that API existed, from {@link #readDiscoveryMetadata(byte[])} on the archived exchange
+     * set.</p>
      *
      * <p>An entry whose signature was counter-signed - S-100 Part 15, clause 15-8.8, chains
      * signatures with S100_SE_SignatureOnSignature - reproduces that chained signature too, so
@@ -1620,13 +1986,21 @@ public final class S124ExchangeSetFactory {
                         organization,
                         LocalDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
             }
+            // The setters keep the caller's lists, so what the factory packages is fixed here:
+            // ExchangeSet.datasets() promises correspondence with the list given to
+            // datasets(List), which a caller that mutates that list afterwards would break.
+            this.datasets = List.copyOf(datasets);
+            this.cancellations = List.copyOf(cancellations);
             return new S124ExchangeSetFactory(this);
         }
     }
 
     /**
-     * Thrown when assembling the exchange set fails for IO, JAXB or certificate reasons, or
-     * when the content to package violates a hard S-124 limit.
+     * Thrown when assembling the exchange set fails for IO, JAXB or certificate reasons, when
+     * the content to package violates a hard S-124 limit, or when a record of an exchange set
+     * already built cannot be read back - a persisted discovery-metadata entry
+     * ({@link #discoveryMetadataFromXml(String)}) or an archived exchange set
+     * ({@link #readDiscoveryMetadata(byte[])}).
      */
     public static final class ExchangeSetException extends RuntimeException {
         public ExchangeSetException(String message) {

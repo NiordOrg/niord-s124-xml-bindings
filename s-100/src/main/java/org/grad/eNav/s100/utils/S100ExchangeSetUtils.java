@@ -18,6 +18,7 @@ package org.grad.eNav.s100.utils;
 
 import dk.dma.niord.s100.catalog._5_2.S100BoundingPolygonType;
 import dk.dma.niord.s100.catalog._5_2.S100DataCoverage;
+import dk.dma.niord.s100.catalog._5_2.S100DatasetDiscoveryMetadata;
 import dk.dma.niord.s100.catalog._5_2.S100ExchangeCatalogue;
 import dk.dma.niord.s100.catalog._5_2.S100GeographicBoundingBoxType;
 import jakarta.xml.bind.*;
@@ -102,6 +103,52 @@ public class S100ExchangeSetUtils {
      * so a JVM-wide counter guarantees the required document uniqueness.
      */
     private static final AtomicLong BOUNDING_POLYGON_ID_COUNTER = new AtomicLong(1);
+
+    /**
+     * The JAXB context shared by every catalogue marshalling operation in this class,
+     * created once and reused.
+     * <p/>
+     * It is the package wide context rather than a class scoped one because that is what
+     * resolves the S100_SE_DigitalSignature substitution group - a signature marshalled as
+     * an S100_SE_SignatureOnData, the realization S-100 Part 15, clause 15-8.11.3, gives a
+     * signature over a data resource, has to return as one. S100ExchangeCatalogue and
+     * S100DatasetDiscoveryMetadata live in the same package and are loaded by the same class
+     * loader, so a single context serves both.
+     * <p/>
+     * Building a context costs roughly 50ms, which dominates the cost of a marshal or an
+     * unmarshal; a cancellation deep copies an entry through this class and an exchange set
+     * marshals a catalogue, so a producer withdrawing a batch of warnings would otherwise pay
+     * that price tens of times per exchange set. JAXBContext is documented thread safe and
+     * the package and class loader arguments are constant, so the instance is safe to share;
+     * the Marshaller and Unmarshaller derived from it are not, and are still created per call.
+     */
+    private static volatile JAXBContext catalogueJaxbContext;
+
+    /**
+     * Returns the shared catalogue JAXB context, creating it on first use.
+     * <p/>
+     * The context is created lazily rather than in a static initialiser so that a JAXB
+     * configuration failure surfaces as the declared JAXBException on the call that needs the
+     * context, not as an ExceptionInInitializerError from an unrelated use of this class.
+     *
+     * @return the JAXB context covering the S-100 exchange catalogue package
+     * @throws JAXBException for errors in creating the JAXB context
+     */
+    private static JAXBContext catalogueJaxbContext() throws JAXBException {
+        JAXBContext context = catalogueJaxbContext;
+        if (context == null) {
+            synchronized (S100ExchangeSetUtils.class) {
+                context = catalogueJaxbContext;
+                if (context == null) {
+                    context = JAXBContext.newInstance(
+                            S100ExchangeCatalogue.class.getPackageName(),
+                            S100ExchangeCatalogue.class.getClassLoader());
+                    catalogueJaxbContext = context;
+                }
+            }
+        }
+        return context;
+    }
 
 
     /**
@@ -318,7 +365,7 @@ public class S100ExchangeSetUtils {
      */
     public static String marshalS100ExchangeSetCatalogue(S100ExchangeCatalogue s100ExchangeCatalogue, Boolean format) throws JAXBException {
         // Create the JAXB objects
-        JAXBContext jaxbContext = JAXBContext.newInstance(S100ExchangeCatalogue.class.getPackageName(), S100ExchangeCatalogue.class.getClassLoader());
+        JAXBContext jaxbContext = catalogueJaxbContext();
         Marshaller jaxbMarshaller = jaxbContext.createMarshaller();
         jaxbMarshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, format);
 
@@ -326,8 +373,12 @@ public class S100ExchangeSetUtils {
         ByteArrayOutputStream xmlStream = new ByteArrayOutputStream();
         jaxbMarshaller.marshal(s100ExchangeCatalogue, xmlStream);
 
-        // Return the XML string
-        return xmlStream.toString();
+        // Return the XML string. The marshaller writes UTF-8 and declares it in the XML
+        // declaration, so the bytes must be decoded as UTF-8 and not with whatever the
+        // platform default charset happens to be: the unmarshalling side re-encodes as UTF-8,
+        // and the exchange set writes these bytes into CATALOG.XML as UTF-8, so decoding with
+        // anything else silently mangles every non-ASCII character in the catalogue.
+        return xmlStream.toString(StandardCharsets.UTF_8);
     }
 
     /**
@@ -341,14 +392,94 @@ public class S100ExchangeSetUtils {
      */
     public static S100ExchangeCatalogue unmarshallS100ExchangeSetCatalogue(String s100ExchangeCatalogue) throws JAXBException {
         // Create the JAXB objects
-        JAXBContext jaxbContext = JAXBContext.newInstance(S100ExchangeCatalogue.class.getPackageName(), S100ExchangeCatalogue.class.getClassLoader());
+        JAXBContext jaxbContext = catalogueJaxbContext();
         Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
 
         // Transform the S100 Exchange Set Catalogue context into an input stream
-        ByteArrayInputStream is = new ByteArrayInputStream(s100ExchangeCatalogue.getBytes());
+        // The marshalling side writes UTF-8, so the platform default charset must not be
+        // allowed to decide how the document is read back.
+        ByteArrayInputStream is = new ByteArrayInputStream(s100ExchangeCatalogue.getBytes(StandardCharsets.UTF_8));
 
         // And translate
         return (S100ExchangeCatalogue) JAXBIntrospector.getValue(jaxbUnmarshaller.unmarshal(is));
+    }
+
+    /**
+     * Overloading the S100 dataset discovery metadata marshalling operation to
+     * easily perform the task with the formatting turned on by default.
+     * <p/>
+     * The unformatted output of the two argument overload is the one to store,
+     * being appreciably smaller; both forms parse into equivalent entries, so
+     * comparing the output of the two as strings is meaningless.
+     *
+     * @param metadata the S100 dataset discovery metadata object
+     * @return the marshalled S100 dataset discovery metadata XML representation
+     * @throws JAXBException for errors in the marshalling operation
+     */
+    public static String marshalS100DatasetDiscoveryMetadata(S100DatasetDiscoveryMetadata metadata) throws JAXBException {
+        return marshalS100DatasetDiscoveryMetadata(metadata, Boolean.TRUE);
+    }
+
+    /**
+     * Using the S100ExchangeSet utilities we can marshall a single
+     * S100DatasetDiscoveryMetadata entry to its XML representation, separately
+     * from the exchange catalogue that carries it. The type is an XML root
+     * element in its own right, so a single entry round-trips on its own.
+     * <p/>
+     * A producer stores an entry in this form between publishing a dataset and
+     * cancelling it: S-100 Part 17, clause 17-4.4.1, cancels a dataset with an
+     * entry that reproduces the published one, so the published entry has to
+     * outlive the exchange catalogue it was delivered in.
+     *
+     * @param metadata the S100 dataset discovery metadata object
+     * @param format whether to format the XML string
+     * @return the marshalled S100 dataset discovery metadata XML representation
+     * @throws JAXBException for errors in the marshalling operation
+     */
+    public static String marshalS100DatasetDiscoveryMetadata(S100DatasetDiscoveryMetadata metadata, Boolean format) throws JAXBException {
+        // Create the JAXB objects
+        JAXBContext jaxbContext = catalogueJaxbContext();
+        Marshaller jaxbMarshaller = jaxbContext.createMarshaller();
+        jaxbMarshaller.setProperty(Marshaller.JAXB_FORMATTED_OUTPUT, format);
+
+        // Transform the S100 dataset discovery metadata object to an output stream
+        ByteArrayOutputStream xmlStream = new ByteArrayOutputStream();
+        jaxbMarshaller.marshal(metadata, xmlStream);
+
+        // Return the XML string, decoded as the UTF-8 the marshaller wrote and declared -
+        // see marshalS100ExchangeSetCatalogue. Getting this wrong is worse here than anywhere
+        // else in the class: this is the form a producer stores an entry in, and the
+        // cancellation built from it has to reproduce the original's free text fields
+        // unchanged (S-100 Part 17, clause 17-4.4.1).
+        return xmlStream.toString(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * The character string input object contains the XML content of a single
+     * S100 dataset discovery metadata entry, as written by
+     * {@link #marshalS100DatasetDiscoveryMetadata(S100DatasetDiscoveryMetadata)}.
+     * We can easily translate that back into an S100DatasetDiscoveryMetadata
+     * object, ready to be reproduced in a cancellation entry.
+     * <p/>
+     * The package wide JAXB context is used here as it is for the exchange
+     * catalogue, because it is what resolves the S100_SE_DigitalSignature
+     * substitution group: a stored signature therefore returns as the
+     * S100_SE_SignatureOnData it was marshalled as.
+     *
+     * @param metadataXml the S100 dataset discovery metadata XML content
+     * @return The unmarshalled S100 dataset discovery metadata object
+     * @throws JAXBException for errors in the unmarshalling operation
+     */
+    public static S100DatasetDiscoveryMetadata unmarshallS100DatasetDiscoveryMetadata(String metadataXml) throws JAXBException {
+        // Create the JAXB objects
+        JAXBContext jaxbContext = catalogueJaxbContext();
+        Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
+
+        // Transform the S100 dataset discovery metadata content into an input stream
+        ByteArrayInputStream is = new ByteArrayInputStream(metadataXml.getBytes(StandardCharsets.UTF_8));
+
+        // And translate
+        return (S100DatasetDiscoveryMetadata) JAXBIntrospector.getValue(jaxbUnmarshaller.unmarshal(is));
     }
 
     /**

@@ -1962,28 +1962,454 @@ class S124ExchangeSetFactoryTest {
                 .hasMessageContaining("at least one dataset or cancellation");
     }
 
+    // ---------------------------------------------------------------------------------------
+    // What a producer keeps in order to withdraw a dataset later (S-100 Part 17, clause 17-4.4.1)
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The entry handed back is the entry that was marshalled, not one equivalent to it. This is
+     * the permanent guard on the contract S100ExchangeCatalogueBuilder.build() keeps but does not
+     * document: it invokes each registered metadata provider once and adds what the provider
+     * returns to the catalogue unmutated, so the object captured inside the provider is the object
+     * CATALOG.XML carries. That invariant is also what makes handing the entries back from the
+     * build correct at all - a producer persisting an entry the exchange set does not contain
+     * would later cancel a dataset nobody received. Do not delete this test.
+     */
+    @Test
+    void toExchangeSetReturnsTheEntryThatWasMarshalledIntoTheCatalogue() throws Exception {
+        S124ExchangeSetFactory.ExchangeSet set = publisher()
+                .datasets(List.of(newDataset("DK.S124.captured")))
+                .build()
+                .toExchangeSet();
+
+        assertThat(set.datasets()).hasSize(1);
+        assertThat(marshal(set.datasets().get(0).discoveryMetadata()))
+                .isEqualTo(marshal(firstEntryOf(set.bytes())));
+    }
+
+    /**
+     * The published datasets come back at the index their dataset has in the builder, and each
+     * one carries the very object the caller handed over - the only join that always works,
+     * since a dataset declaring neither a gml:id nor a datasetFileIdentifier is packaged under a
+     * randomly drawn clause 17-4.3 unique code the caller could not have predicted.
+     */
+    @Test
+    void publishedDatasetsAreInBuilderOrderAndJoinBackByIdentity() throws Exception {
+        Dataset first = newDataset("DK.S124.first");
+        Dataset unnamed = newDataset("DK.S124.middle");
+        unnamed.setId(null);
+        unnamed.getDatasetIdentificationInformation().setDatasetFileIdentifier(null);
+        Dataset last = newDataset("DK.S124.last");
+        List<Dataset> input = List.of(first, unnamed, last);
+
+        S124ExchangeSetFactory.ExchangeSet set = publisher()
+                .datasets(input)
+                // the middle dataset carries no gml:id, which the GML schema requires
+                .validateAgainstSchema(false)
+                .build()
+                .toExchangeSet();
+
+        assertThat(set.datasets()).hasSize(3);
+        Map<String, byte[]> entries = unzip(set.bytes());
+        for (int i = 0; i < input.size(); i++) {
+            S124ExchangeSetFactory.PublishedDataset published = set.datasets().get(i);
+            assertThat(published.dataset()).isSameAs(input.get(i));
+            assertThat(entries).containsKey("S100_ROOT/S-124/DATASET_FILES/" + published.fileName());
+        }
+        assertThat(set.datasets().get(1).fileName())
+                .as("the randomly coded file name is readable nowhere else")
+                .isNotEqualTo(datasetFileNameOf("DK.S124.middle"));
+    }
+
+    /**
+     * The name is the bare clause 17-4.3 file name, while the catalogue's fileName is typed
+     * xs:anyURI and carries the file:/ form that clause 17-4.4.1 has a cancellation reproduce
+     * verbatim. Both are needed, so the relation between them is fixed.
+     */
+    @Test
+    void publishedFileNameIsTheBareNameTheCatalogueCarriesAsAUri() throws Exception {
+        S124ExchangeSetFactory.PublishedDataset published = publisher()
+                .datasets(List.of(newDataset("DK.S124.bare-name")))
+                .build()
+                .toExchangeSet()
+                .datasets()
+                .get(0);
+
+        assertThat(published.fileName())
+                .isEqualTo(datasetFileNameOf("DK.S124.bare-name"))
+                .doesNotContain("/")
+                .doesNotStartWith("file:");
+        assertThat(published.discoveryMetadata().getFileName())
+                .isEqualTo("file:/" + published.fileName());
+    }
+
+    /**
+     * A fileless cancellation publishes nothing, so there is nothing new to record. The signing
+     * chain still comes back: the exchange set is signed like any other.
+     */
+    @Test
+    void cancellationOnlyExchangeSetPublishesNoDatasets() throws Exception {
+        S124ExchangeSetFactory.ExchangeSet set = publisher()
+                .cancellations(List.of(cancellationOf(newDataset("DK.S124.only-cancel"))))
+                .build()
+                .toExchangeSet();
+
+        assertThat(set.datasets()).isEmpty();
+        assertThat(set.signingCertificatePems()).containsExactly(testCertPem);
+        assertThat(datasetFileCount(unzip(set.bytes()))).isZero();
+        List<S100DatasetDiscoveryMetadata> meta = catalogueOf(set.bytes())
+                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas();
+        assertThat(meta).hasSize(1);
+        assertThat(meta.get(0).getPurpose()).isEqualTo(S100Purpose.CANCELLATION);
+    }
+
+    /**
+     * toBytes() now delegates to toExchangeSet(), and must still build what it always built. The
+     * two artefacts cannot be compared byte for byte - each build stamps a fresh time and asks
+     * the signer again - so the comparison is of everything the layout fixes.
+     */
+    @Test
+    void toBytesProducesTheSameArtefactShapeAsToExchangeSet() throws Exception {
+        S124ExchangeSetFactory factory = publisher()
+                .datasets(List.of(newDataset("DK.S124.shape-a"), newDataset("DK.S124.shape-b")))
+                .build();
+
+        Map<String, byte[]> fromBytes = unzip(factory.toBytes());
+        S124ExchangeSetFactory.ExchangeSet set = factory.toExchangeSet();
+
+        assertThat(unzip(set.bytes()).keySet()).isEqualTo(fromBytes.keySet());
+        assertThat(set.datasets().stream().map(S124ExchangeSetFactory.PublishedDataset::fileName))
+                .containsExactly(datasetFileNameOf("DK.S124.shape-a"), datasetFileNameOf("DK.S124.shape-b"));
+    }
+
+    /**
+     * The chain is the one the Data Server signed with, leaf first: exactly the form
+     * {@link S124ExchangeSetFactory.Cancellation} takes it in, so a producer can persist it as it
+     * comes and hand it back unaltered.
+     */
+    @Test
+    void signingCertificatePemsAreTheDataServerChainSigningCertificateFirst() throws Exception {
+        S124ExchangeSetFactory.ExchangeSet set = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.chain")))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(dataServerViaDcPem)
+                .intermediateCertificatePems(List.of(domainCoordinatorPem))
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
+                .phone("+4572196000")
+                .build()
+                .toExchangeSet();
+
+        assertThat(set.signingCertificatePems())
+                .containsExactly(dataServerViaDcPem, domainCoordinatorPem);
+    }
+
+    /**
+     * The reason the chain is handed back at all: the entry records only the id its own catalogue
+     * gave the certificate, so a producer holding just the entry cannot satisfy S-100 Part 15,
+     * clause 15-8.7 - "all the certificates required to perform a full certificate path validation
+     * without any external access" - once the key has rotated. Everything this cancellation needs
+     * comes out of the earlier build result.
+     */
+    @Test
+    void theReturnedChainCancelsAfterTheCertificateHasRotated() throws Exception {
+        S124ExchangeSetFactory.ExchangeSet published = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.rotate-from-result")))
+                .organization("DMA")
+                .producerCode("DK00")
+                .certificatePem(dataServerViaDcPem)
+                .intermediateCertificatePems(List.of(domainCoordinatorPem))
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
+                .phone("+4572196000")
+                .build()
+                .toExchangeSet();
+        S100DatasetDiscoveryMetadata retainedEntry = published.datasets().get(0).discoveryMetadata();
+        List<String> retainedChain = published.signingCertificatePems();
+
+        // The producer has since rotated to an unrelated Data Server certificate.
+        byte[] zip = cancellationExchangeSet(new S124ExchangeSetFactory.Cancellation(
+                retainedEntry, retainedEntry.getIssueDate().plusDays(30), retainedChain),
+                testCertPem, List.of());
+
+        S100ExchangeCatalogue catalogue = catalogueOf(zip);
+        Map<String, String> pemById = catalogue.getCertificates().get(0).getCertificates().stream()
+                .collect(Collectors.toMap(S100SECertificateType::getId,
+                        S124ExchangeSetFactoryTest::pemOf));
+        String ref = dataSignatureOf(catalogue.getDatasetDiscoveryMetadata()
+                .getS100DatasetDiscoveryMetadatas().get(0)).getCertificateRef();
+
+        assertThat(pemById.get(ref)).isEqualTo(dataServerViaDcPem);
+        assertThat(pemById.get("cer1")).as("the current certificate signs the new catalogue")
+                .isEqualTo(testCertPem);
+        assertThat(pemById).as("the rotated-out leaf's own issuer travels with it")
+                .containsValue(domainCoordinatorPem);
+    }
+
+    /**
+     * The whole point, end to end: publish, persist the entry as a producer's database column
+     * holds it, and cancel from that column alone - without unzipping anything or knowing that
+     * an exchange catalogue exists. Clause 17-4.4.1 excepts the issue date and the purpose from
+     * "the same values as the original"; everything else must be reproduced, and is.
+     */
+    @Test
+    void publishThenPersistThenCancelWithoutTouchingTheZip() throws Exception {
+        S124ExchangeSetFactory.ExchangeSet published = publisher()
+                .datasets(List.of(newDataset("DK.S124.end-to-end")))
+                .build()
+                .toExchangeSet();
+        S124ExchangeSetFactory.PublishedDataset row = published.datasets().get(0);
+        String storedMetadata = S124ExchangeSetFactory.discoveryMetadataToXml(row.discoveryMetadata());
+        List<String> storedChain = published.signingCertificatePems();
+
+        S100DatasetDiscoveryMetadata original =
+                S124ExchangeSetFactory.discoveryMetadataFromXml(storedMetadata);
+        LocalDate cancelledOn = original.getIssueDate().plusMonths(4);
+        byte[] cancellationZip = publisher()
+                .cancellations(List.of(new S124ExchangeSetFactory.Cancellation(
+                        original, cancelledOn, storedChain)))
+                .build()
+                .toBytes();
+
+        // Only the assertions read the shipped artefact; the producer flow above never did.
+        S100DatasetDiscoveryMetadata emitted = firstEntryOf(cancellationZip);
+        assertThat(emitted.getPurpose()).isEqualTo(S100Purpose.CANCELLATION);
+        assertThat(emitted.getIssueDate()).isEqualTo(cancelledOn);
+        assertThat(emitted.getFileName()).isEqualTo("file:/" + row.fileName());
+        S100SESignatureOnData reused = dataSignatureOf(emitted);
+        S100SESignatureOnData publishedSignature = dataSignatureOf(row.discoveryMetadata());
+        assertThat(reused.getValue())
+                .as("a fileless cancellation reuses the original signature")
+                .isEqualTo(publishedSignature.getValue());
+        assertThat(reused.getId()).isEqualTo(publishedSignature.getId());
+        assertThat(reused.getDataStatus()).isEqualTo(publishedSignature.getDataStatus());
+        assertThat(reused.getCertificateRef())
+                .as("the signing certificate has not changed, so the entry keeps its id")
+                .isEqualTo(publishedSignature.getCertificateRef());
+
+        // Normalise the two fields the clause excepts, and the rest of the entry is the same
+        // document. The signature is compared above rather than as text: the published entry
+        // writes the substitution group head with an xsi:type and the reproduced one the
+        // S100_SE_SignatureOnData member element, which is the same signature to a reader.
+        S100DatasetDiscoveryMetadata expected =
+                S124ExchangeSetFactory.discoveryMetadataFromXml(storedMetadata);
+        expected.setPurpose(S100Purpose.CANCELLATION);
+        expected.setIssueDate(cancelledOn);
+        assertThat(withoutSignature(marshal(emitted))).isEqualTo(withoutSignature(marshal(expected)));
+    }
+
+    /** A marshalled discovery metadata entry with its signature elements removed. */
+    private static String withoutSignature(String entryXml) {
+        return entryXml.replaceAll("(?s)<digitalSignatureValue>.*?</digitalSignatureValue>", "");
+    }
+
+    /**
+     * The persisted form has to survive the database round trip whole: the signature is what
+     * clause 17-4.4.1 reuses, and its certificateRef, dataStatus and concrete
+     * S100_SE_SignatureOnData type are what a Part 15 reader authenticates it by.
+     */
+    @Test
+    void discoveryMetadataXmlRoundTripPreservesTheSignature() throws Exception {
+        S100DatasetDiscoveryMetadata entry = publisher()
+                .datasets(List.of(newDataset("DK.S124.persisted")))
+                .build()
+                .toExchangeSet()
+                .datasets()
+                .get(0)
+                .discoveryMetadata();
+        String xml = S124ExchangeSetFactory.discoveryMetadataToXml(entry);
+
+        S100DatasetDiscoveryMetadata restored = S124ExchangeSetFactory.discoveryMetadataFromXml(xml);
+
+        S100SEDigitalSignature signature = restored.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue();
+        assertThat(signature).isInstanceOf(S100SESignatureOnData.class);
+        S100SESignatureOnData onData = (S100SESignatureOnData) signature;
+        assertThat(onData.getValue()).isEqualTo(dataSignatureOf(entry).getValue());
+        assertThat(onData.getId()).isEqualTo(dataSignatureOf(entry).getId());
+        assertThat(onData.getCertificateRef()).isEqualTo(dataSignatureOf(entry).getCertificateRef());
+        assertThat(onData.getDataStatus()).isEqualTo(DataStatus.UNENCRYPTED);
+        assertThat(S124ExchangeSetFactory.discoveryMetadataToXml(restored)).isEqualTo(xml);
+    }
+
+    /**
+     * The persisted form is XML text and a Danish producer's free text is not ASCII, so the
+     * entry is written and read back as the UTF-8 the marshaller declares rather than through
+     * whatever the JVM's default charset happens to be. Clause 17-4.4.1 requires the
+     * cancellation to reproduce the original's metadata fields, and a producing agency name or
+     * dataset comment that came back mangled from the producer's database would be re-signed
+     * into the cancelling catalogue in that mangled form.
+     */
+    @Test
+    void discoveryMetadataXmlRoundTripPreservesNonAsciiFreeText() throws Exception {
+        String agency = "S\u00f8fartsstyrelsen";
+        String comment = "\u00d8resund og L\u00e6s\u00f8 Rende - grundst\u00f8dning ved \u00c6r\u00f8";
+        S100DatasetDiscoveryMetadata entry = publisher()
+                .organization(agency)
+                .datasetComment(comment)
+                .datasets(List.of(newDataset("DK.S124.non-ascii")))
+                .build()
+                .toExchangeSet()
+                .datasets()
+                .get(0)
+                .discoveryMetadata();
+
+        S100DatasetDiscoveryMetadata restored = S124ExchangeSetFactory.discoveryMetadataFromXml(
+                S124ExchangeSetFactory.discoveryMetadataToXml(entry));
+
+        assertThat(organisationNameOf(restored)).isEqualTo(agency);
+        assertThat(restored.getComment().getCharacterString().getValue()).isEqualTo(comment);
+    }
+
+    /** The name of the organisation the entry's mandatory producingAgency block names. */
+    private static String organisationNameOf(S100DatasetDiscoveryMetadata metadata) {
+        org.iso.standards.iso._19115.__3.cit._2.CIOrganisationType organisation =
+                (org.iso.standards.iso._19115.__3.cit._2.CIOrganisationType) metadata.getProducingAgency()
+                        .getCIResponsibility().getParties().get(0).getAbstractCIParty().getValue();
+        return (String) organisation.getName().getCharacterString().getValue();
+    }
+
+    /**
+     * Reading the entry back is a step in building the next exchange set, so a half-written
+     * column raises the exception every caller of this factory already handles rather than a
+     * checked JAXBException a transactional service method would have to catch.
+     */
+    @Test
+    void discoveryMetadataFromXmlRejectsATruncatedEntry() throws Exception {
+        String xml = S124ExchangeSetFactory.discoveryMetadataToXml(publisher()
+                .datasets(List.of(newDataset("DK.S124.truncated")))
+                .build()
+                .toExchangeSet()
+                .datasets()
+                .get(0)
+                .discoveryMetadata());
+        String half = xml.substring(0, xml.length() / 2);
+
+        assertThatThrownBy(() -> S124ExchangeSetFactory.discoveryMetadataFromXml(half))
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("discovery metadata")
+                .hasCauseInstanceOf(jakarta.xml.bind.JAXBException.class);
+    }
+
+    /**
+     * The back-fill path for datasets published before the entries were handed back: the shipped
+     * catalogue is the only faithful record of what clause 17-4.4.1 requires a cancellation to
+     * reproduce, and the file name is the only key a producer still holds.
+     */
+    @Test
+    void readDiscoveryMetadataRecoversTheEntriesOfABuiltExchangeSet() throws Exception {
+        S124ExchangeSetFactory.ExchangeSet set = publisher()
+                .datasets(List.of(newDataset("DK.S124.archived-a"), newDataset("DK.S124.archived-b")))
+                .build()
+                .toExchangeSet();
+
+        Map<String, S100DatasetDiscoveryMetadata> recovered =
+                S124ExchangeSetFactory.readDiscoveryMetadata(set.bytes());
+
+        assertThat(recovered.keySet()).containsExactly(
+                datasetFileNameOf("DK.S124.archived-a"), datasetFileNameOf("DK.S124.archived-b"));
+        for (S124ExchangeSetFactory.PublishedDataset published : set.datasets()) {
+            assertThat(marshal(recovered.get(published.fileName())))
+                    .isEqualTo(marshal(published.discoveryMetadata()));
+        }
+    }
+
+    /**
+     * Only the newDataset entries come back. A cancellation entry withdraws a dataset rather than
+     * publishing one, can never be the original of a further cancellation, and carries the file
+     * name of the entry it cancels - so it would also collide on the key.
+     */
+    @Test
+    void readDiscoveryMetadataSkipsCancellationEntries() throws Exception {
+        Dataset active = newDataset("DK.S124.still-published");
+        byte[] withUnrelatedCancellation = publisher()
+                .datasets(List.of(active))
+                .cancellations(List.of(cancellationOf(newDataset("DK.S124.withdrawn"))))
+                .build()
+                .toBytes();
+
+        assertThat(S124ExchangeSetFactory.readDiscoveryMetadata(withUnrelatedCancellation).keySet())
+                .containsExactly(datasetFileNameOf("DK.S124.still-published"));
+
+        // The same file name published and cancelled in one build: still one key, the live entry.
+        Dataset republished = newDataset("DK.S124.same-name");
+        byte[] withCollidingCancellation = publisher()
+                .datasets(List.of(republished))
+                .cancellations(List.of(cancellationOf(newDataset("DK.S124.same-name"))))
+                .build()
+                .toBytes();
+
+        Map<String, S100DatasetDiscoveryMetadata> recovered =
+                S124ExchangeSetFactory.readDiscoveryMetadata(withCollidingCancellation);
+        assertThat(recovered).hasSize(1);
+        assertThat(recovered.get(datasetFileNameOf("DK.S124.same-name")).getPurpose())
+                .isEqualTo(S100Purpose.NEW_DATASET);
+    }
+
+    @Test
+    void readDiscoveryMetadataRejectsAZipWithoutACatalogue() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(out)) {
+            zos.putNextEntry(new ZipEntry("readme.txt"));
+            zos.write("not an exchange set".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+        byte[] zip = out.toByteArray();
+
+        assertThatThrownBy(() -> S124ExchangeSetFactory.readDiscoveryMetadata(zip))
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("S100_ROOT/CATALOG.XML");
+    }
+
+    /**
+     * ExchangeSet.datasets() promises an entry at the index each dataset has in
+     * Builder.datasets(List), so what the factory packages is fixed when it is built rather than
+     * read off a list the caller may since have added to.
+     */
+    @Test
+    void datasetsAreSnapshotWhenTheFactoryIsBuilt() throws Exception {
+        List<Dataset> datasets = new ArrayList<>(List.of(newDataset("DK.S124.snapshot")));
+        S124ExchangeSetFactory factory = publisher().datasets(datasets).build();
+
+        datasets.add(newDataset("DK.S124.added-after-build"));
+
+        S124ExchangeSetFactory.ExchangeSet set = factory.toExchangeSet();
+        assertThat(set.datasets()).hasSize(1);
+        assertThat(set.datasets().get(0).fileName()).isEqualTo(datasetFileNameOf("DK.S124.snapshot"));
+        assertThat(datasetFileCount(unzip(set.bytes()))).isEqualTo(1);
+    }
+
     /** Builds a real exchange set for the given dataset and derives a fileless {@link S124ExchangeSetFactory.Cancellation} of it. */
 
     private static S124ExchangeSetFactory.Cancellation cancellationOf(Dataset dataset) throws Exception {
         return cancellationOf(dataset, List.of());
     }
 
-    /** Publishes {@code dataset}, then builds a cancellation reproducing its catalogue entry. */
+    /**
+     * Publishes {@code dataset}, then builds a cancellation reproducing its catalogue entry -
+     * taking that entry from the build result, the way a producer does, rather than unzipping
+     * the exchange set to recover it.
+     */
     private static S124ExchangeSetFactory.Cancellation cancellationOf(
             Dataset dataset, List<String> certificatePems) throws Exception {
-        byte[] zip = S124ExchangeSetFactory.builder()
+        S100DatasetDiscoveryMetadata original = publisher()
                 .datasets(List.of(dataset))
+                .build()
+                .toExchangeSet()
+                .datasets()
+                .get(0)
+                .discoveryMetadata();
+        return new S124ExchangeSetFactory.Cancellation(
+                original, original.getIssueDate().plusDays(1), certificatePems);
+    }
+
+    /** A factory builder carrying the mandatory details of the test producer. */
+    private static S124ExchangeSetFactory.Builder publisher() {
+        return S124ExchangeSetFactory.builder()
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
                 .signer((alg, payload) -> DUMMY_SIGNATURE)
-                .phone("+4572196000")
-                .build()
-                .toBytes();
-        S100DatasetDiscoveryMetadata original = catalogueOf(zip)
-                .getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
-        return new S124ExchangeSetFactory.Cancellation(
-                original, original.getIssueDate().plusDays(1), certificatePems);
+                .phone("+4572196000");
     }
 
     private static String marshal(S100DatasetDiscoveryMetadata metadata) throws Exception {

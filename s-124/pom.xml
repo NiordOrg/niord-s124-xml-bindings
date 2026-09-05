@@ -94,6 +94,15 @@
             <version>3.26.3</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- Test only: generates the throwaway EC P-384 keys and X.509 certificates that the
+             signing tests and the example generator produce real ECDSA signatures with. -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcpkix-jdk18on</artifactId>
+            <version>1.84</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>

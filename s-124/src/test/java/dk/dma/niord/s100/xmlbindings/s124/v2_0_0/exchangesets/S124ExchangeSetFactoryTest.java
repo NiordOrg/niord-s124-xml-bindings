@@ -13,6 +13,8 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.GeneralSecurityException;
+import java.security.Signature;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.LocalDate;
@@ -21,6 +23,7 @@ import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -102,6 +105,14 @@ class S124ExchangeSetFactoryTest {
     private static final Pattern CERTIFICATE_ELEMENT =
             Pattern.compile("<(?:[\\w.-]+:)?certificate[^>]*>([^<]*)</(?:[\\w.-]+:)?certificate>");
 
+    /**
+     * A syntactically valid Part 15 signature value that no key made: the DER SEQUENCE of two
+     * 48-byte INTEGERs, the shape a real P-384 signature has (S-100 Part 15, clause 15-8.4).
+     * Tests that are not about cryptography sign with it, because the factory checks the shape
+     * of every signature it embeds.
+     */
+    private static final byte[] DUMMY_SIGNATURE = dummySignature((byte) 0x11, (byte) 0x22);
+
     private static String testCertPem;
 
     /** Data Server certificate issued by the domain coordinator below, not by the SA. */
@@ -136,7 +147,7 @@ class S124ExchangeSetFactoryTest {
         AtomicInteger signCalls = new AtomicInteger();
         S124Signer signer = (algorithm, payload) -> {
             signCalls.incrementAndGet();
-            return new byte[64];
+            return DUMMY_SIGNATURE;
         };
 
         byte[] zipBytes = S124ExchangeSetFactory.builder()
@@ -191,7 +202,7 @@ class S124ExchangeSetFactoryTest {
      */
     @Test
     void catalogueSignatureIsAStandaloneDigitalSignatureDocument() throws Exception {
-        byte[] signatureBytes = "s-124-catalogue-signature".getBytes(StandardCharsets.UTF_8);
+        byte[] signatureBytes = dummySignature((byte) 0x33, (byte) 0x44);
 
         byte[] zipBytes = S124ExchangeSetFactory.builder()
                 .datasets(List.of(newDataset("DK.S124.catalogue-signature")))
@@ -243,7 +254,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -288,7 +299,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .schemeAdministrator("IHO-TEST")
                 .build()
@@ -320,7 +331,7 @@ class S124ExchangeSetFactoryTest {
                 .producerCode("DK00")
                 .certificatePem(dataServerViaDcPem)
                 .intermediateCertificatePems(List.of(domainCoordinatorPem))
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -363,7 +374,7 @@ class S124ExchangeSetFactoryTest {
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
                 .intermediateCertificatePems(List.of(domainCoordinatorPem))
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -386,7 +397,7 @@ class S124ExchangeSetFactoryTest {
                 .certificatePem(dataServerViaDcPem)
                 // Same subject name as the domain coordinator that really issued it, other key.
                 .intermediateCertificatePems(List.of(domainCoordinatorRolloverPem))
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -424,7 +435,7 @@ class S124ExchangeSetFactoryTest {
                 .producerCode("DK00")
                 .certificatePem(dataServerViaDcPem)
                 .intermediateCertificatePems(List.of(domainCoordinatorPem))
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -469,7 +480,7 @@ class S124ExchangeSetFactoryTest {
                 .producerCode("DK00")
                 .certificatePem(dataServerViaDcPem)
                 .intermediateCertificatePems(List.of(domainCoordinatorPem))
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -499,6 +510,222 @@ class S124ExchangeSetFactoryTest {
     }
 
     /**
+     * The regression the certificate-aware cancellation API exists for, with real cryptography:
+     * a dataset signed under certificate A is cancelled after the producer has rotated to B. The
+     * cancellation reuses the original signature byte for byte (S-100 Part 17, clause 17-4.4.1),
+     * and that signature must verify against the original dataset bytes with the certificate the
+     * cancellation entry references - A, carried alongside B - while the new catalogue's own
+     * signature verifies with B. The encoding is asserted separately from the round trips: a
+     * signer returning the raw r||s form would sign and verify here just as well, and only a
+     * Part 15 reader would notice.
+     */
+    @Test
+    void cancellationSignatureVerifiesWithTheRotatedOutCertificateThatMadeIt() throws Exception {
+        SigningIdentityFixture a = SigningIdentityFixture.selfSigned("Data Server A");
+        SigningIdentityFixture b = SigningIdentityFixture.selfSigned("Data Server B");
+        Dataset dataset = newDataset("DK.S124.real-rotation");
+        String datasetFile = "S100_ROOT/S-124/DATASET_FILES/" + datasetFileNameOf("DK.S124.real-rotation");
+
+        // 1. Publish under A.
+        byte[] originalZip = S124ExchangeSetFactory.builder()
+                .datasets(List.of(dataset))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(a.certificatePem())
+                .signer(a.signer())
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+        byte[] datasetBytes = unzip(originalZip).get(datasetFile);
+        S100DatasetDiscoveryMetadata originalEntry = firstEntryOf(originalZip);
+        byte[] originalSignature = dataSignatureOf(originalEntry).getValue();
+        assertDerEcdsaSequence(originalSignature);
+        assertThat(SigningIdentityFixture.verify(a.publicKey(), datasetBytes, originalSignature))
+                .as("the published signature verifies against the dataset file with A")
+                .isTrue();
+
+        // 2. Rotate to B and cancel, handing over the retained entry and the chain that signed it.
+        byte[] cancellationZip = S124ExchangeSetFactory.builder()
+                .cancellations(List.of(new S124ExchangeSetFactory.Cancellation(
+                        originalEntry, originalEntry.getIssueDate().plusDays(7), List.of(a.certificatePem()))))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(b.certificatePem())
+                .signer(b.signer())
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+        Map<String, byte[]> entries = unzip(cancellationZip);
+        assertThat(datasetFileCount(entries)).as("a fileless cancellation ships no dataset file").isZero();
+        String catalogXml = new String(entries.get("S100_ROOT/CATALOG.XML"), StandardCharsets.UTF_8);
+        assertThat(validateAgainstCatalogueSchema(catalogXml))
+                .as("XSD validation errors in CATALOG.XML:\n%s", catalogXml)
+                .isEmpty();
+
+        S100ExchangeCatalogue catalogue = catalogueOf(cancellationZip);
+        S100DatasetDiscoveryMetadata cancellation =
+                catalogue.getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+        assertThat(cancellation.getPurpose()).isEqualTo(S100Purpose.CANCELLATION);
+        S100SESignatureOnData reused = dataSignatureOf(cancellation);
+        assertThat(reused.getValue()).as("the reused signature is the original, byte for byte")
+                .isEqualTo(originalSignature);
+
+        // 3. The reused signature verifies with the certificate the entry references - decoded
+        //    from the catalogue as an OEM would, not taken from the test - and that is A.
+        X509Certificate referenced = certificateIn(catalogue.getCertificates().get(0), reused.getCertificateRef());
+        assertThat(referenced).isEqualTo(a.certificate());
+        assertThat(SigningIdentityFixture.verify(referenced.getPublicKey(), datasetBytes, reused.getValue())).isTrue();
+        assertThat(SigningIdentityFixture.verify(b.publicKey(), datasetBytes, reused.getValue()))
+                .as("B did not make the reused signature")
+                .isFalse();
+
+        // 4. The new catalogue's own signature verifies with B, over CATALOG.XML as shipped.
+        StandaloneDigitalSignature catalogSign =
+                unmarshalSignature(new String(entries.get("S100_ROOT/CATALOG.SIGN"), StandardCharsets.UTF_8));
+        X509Certificate catalogueSigner =
+                certificateIn(catalogSign.getCertificates(), catalogSign.getDigitalSignature().getCertificateRef());
+        assertThat(catalogueSigner).isEqualTo(b.certificate());
+        assertDerEcdsaSequence(catalogSign.getDigitalSignature().getValue());
+        assertThat(SigningIdentityFixture.verify(catalogueSigner.getPublicKey(),
+                entries.get("S100_ROOT/CATALOG.XML"), catalogSign.getDigitalSignature().getValue())).isTrue();
+
+        // B is the current certificate; A is carried under a historical id of the catalogue's own.
+        assertThat(certificateIn(catalogue.getCertificates().get(0), "cer1")).isEqualTo(b.certificate());
+        assertThat(reused.getCertificateRef()).isNotEqualTo("cer1");
+    }
+
+    /**
+     * S-100 Part 15, clause 15-8.4, embeds "a Base64 ASN.1 byte sequence" of R and S. A signer
+     * returning the raw r||s concatenation instead - the output of the JCA algorithm
+     * "SHA384withECDSAinP1363Format" - produces signatures that verify in the producer's own
+     * code and that no Part 15 reader can decode, so the factory refuses them rather than
+     * signing and shipping them.
+     */
+    @Test
+    void rejectsASignerThatReturnsTheRawRSPairInsteadOfTheDerSequence() {
+        SigningIdentityFixture identity = SigningIdentityFixture.selfSigned("Data Server");
+        S124Signer p1363 = (algorithm, payload) -> {
+            try {
+                Signature signature = Signature.getInstance("SHA384withECDSAinP1363Format");
+                signature.initSign(identity.privateKey());
+                signature.update(payload);
+                return signature.sign();
+            } catch (GeneralSecurityException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.p1363")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(identity.certificatePem())
+                .signer(p1363)
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining("15-8.4")
+                .hasMessageContaining("96 bytes")
+                .hasMessageContaining("SHA384withECDSA");
+    }
+
+    /** Bytes that are not a well-formed SEQUENCE at all are rejected too, naming the signed resource. */
+    @Test
+    void rejectsSignatureBytesThatAreNotADerSequence() {
+        S124ExchangeSetFactory factory = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.garbage-signature")))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(testCertPem)
+                .signer((alg, payload) -> "not a signature".getBytes(StandardCharsets.UTF_8))
+                .phone("+4572196000")
+                .build();
+
+        assertThatThrownBy(factory::toBytes)
+                .isInstanceOf(S124ExchangeSetFactory.ExchangeSetException.class)
+                .hasMessageContaining(datasetFileNameOf("DK.S124.garbage-signature"))
+                .hasMessageContaining("SEQUENCE tag 0x30");
+    }
+
+    /**
+     * A producer that retains certificate chains with its signatures will, until its first
+     * rotation, hand the factory the very certificate it is signing with. That is not a second
+     * certificate: it is deduplicated by X.509 identity onto the current chain's entry, so the
+     * catalogue carries each certificate once and the reused signature references the current id.
+     */
+    @Test
+    void supplyingTheCurrentCertificateAsTheHistoricalChainReusesItsEntry() throws Exception {
+        S124ExchangeSetFactory.Cancellation cancellation = cancellationOf(
+                newDataset("DK.S124.same-cert"), List.of(dataServerViaDcPem, domainCoordinatorPem));
+
+        byte[] zipBytes = S124ExchangeSetFactory.builder()
+                .datasets(List.of(newDataset("DK.S124.same-cert-active")))
+                .cancellations(List.of(cancellation))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(dataServerViaDcPem)
+                .intermediateCertificatePems(List.of(domainCoordinatorPem))
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+
+        S100ExchangeCatalogue catalogue = catalogueOf(zipBytes);
+        List<S100SECertificateType> certificates = catalogue.getCertificates().get(0).getCertificates();
+        assertThat(certificates).extracting(S100SECertificateType::getId).containsExactlyInAnyOrder("cer1", "ca1");
+        assertThat(certificates).extracting(S124ExchangeSetFactoryTest::pemOf)
+                .containsExactlyInAnyOrder(dataServerViaDcPem, domainCoordinatorPem);
+        // The new dataset's signature and the reused one both reference the one Data Server entry.
+        assertThat(catalogue.getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas())
+                .hasSize(2)
+                .allSatisfy(entry -> assertThat(dataSignatureOf(entry).getCertificateRef()).isEqualTo("cer1"));
+    }
+
+    /**
+     * A producer keeps one record of each published dataset and may cancel it in several
+     * exchange sets - for different consumers, or after a failed delivery - under whatever
+     * certificate is current each time. The record it hands over is its evidence of what was
+     * published, so no build may change it: not the entry, not the signature bytes and not the
+     * certificate reference the original catalogue gave the signature.
+     */
+    @Test
+    void repeatedBuildsFromTheSameCancellationLeaveItsInputUntouched() throws Exception {
+        S124ExchangeSetFactory.Cancellation cancellation =
+                cancellationOf(newDataset("DK.S124.reused-record"), List.of(testCertPem));
+        S100SESignatureOnData originalSignature = dataSignatureOf(cancellation.original());
+        String entryBefore = marshal(cancellation.original());
+        byte[] bytesBefore = originalSignature.getValue().clone();
+        String refBefore = originalSignature.getCertificateRef();
+
+        // First under the certificate that signed it, then after a rotation to a chained one.
+        byte[] first = cancellationExchangeSet(cancellation, testCertPem, List.of());
+        byte[] second = cancellationExchangeSet(cancellation, dataServerViaDcPem, List.of(domainCoordinatorPem));
+
+        assertThat(marshal(cancellation.original())).isEqualTo(entryBefore);
+        assertThat(originalSignature.getValue()).isEqualTo(bytesBefore);
+        assertThat(originalSignature.getCertificateRef()).isEqualTo(refBefore);
+        assertThat(cancellation.original().getPurpose()).isEqualTo(S100Purpose.NEW_DATASET);
+
+        // Each catalogue carries the signing certificate under an id of its own, and both resolve to it.
+        S100SESignatureOnData inFirst = dataSignatureOf(firstEntryOf(first));
+        S100SESignatureOnData inSecond = dataSignatureOf(firstEntryOf(second));
+        assertThat(inFirst.getValue()).isEqualTo(bytesBefore);
+        assertThat(inSecond.getValue()).isEqualTo(bytesBefore);
+        assertThat(inFirst.getCertificateRef()).isEqualTo("cer1");
+        assertThat(inSecond.getCertificateRef()).isNotEqualTo("cer1");
+        assertThat(pemOf(certificateEntry(catalogueOf(first), inFirst.getCertificateRef()))).isEqualTo(testCertPem);
+        assertThat(pemOf(certificateEntry(catalogueOf(second), inSecond.getCertificateRef()))).isEqualTo(testCertPem);
+    }
+
+    private static S100SECertificateType certificateEntry(S100ExchangeCatalogue catalogue, String id) {
+        return catalogue.getCertificates().get(0).getCertificates().stream()
+                .filter(c -> id.equals(c.getId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no certificate with id " + id + " is carried"));
+    }
+
+    /**
      * S-100 Part 15, clause 15-8.8: "Chains of digital signatures are implemented by use of a
      * signatureRef attribute", and clause 15-8.11.5 makes that attribute mandatory (Mult 1).
      * A cancelled dataset's entry may carry such a counter-signature, so reproducing the entry
@@ -524,7 +751,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -606,7 +833,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -632,7 +859,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -659,7 +886,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -698,6 +925,71 @@ class S124ExchangeSetFactoryTest {
         return all;
     }
 
+    /** A DER SEQUENCE of two 48-byte INTEGERs filled with the given bytes; see {@link #DUMMY_SIGNATURE}. */
+    private static byte[] dummySignature(byte rFill, byte sFill) {
+        byte[] signature = new byte[2 + 50 + 50];
+        signature[0] = 0x30;
+        signature[1] = (byte) 100;
+        signature[2] = 0x02;
+        signature[3] = 48;
+        Arrays.fill(signature, 4, 52, rFill);
+        signature[52] = 0x02;
+        signature[53] = 48;
+        Arrays.fill(signature, 54, 102, sFill);
+        return signature;
+    }
+
+    /**
+     * S-100 Part 15, clause 15-8.4: the embedded value is "a Base64 ASN.1 byte sequence" of the
+     * integers R and S - once JAXB has removed the Base64 layer on unmarshalling, a DER SEQUENCE
+     * (tag 0x30) of two INTEGERs (tag 0x02) that fill it exactly. Asserted independently of any
+     * sign-and-verify round trip, because such a round trip succeeds for the raw r||s form too.
+     */
+    private static void assertDerEcdsaSequence(byte[] signature) {
+        assertThat(signature[0]).as("SEQUENCE tag").isEqualTo((byte) 0x30);
+        assertThat(signature[1] & 0xFF).as("SEQUENCE length").isEqualTo(signature.length - 2);
+        assertThat(signature[2]).as("INTEGER r tag").isEqualTo((byte) 0x02);
+        int rLength = signature[3] & 0xFF;
+        assertThat(signature[4 + rLength]).as("INTEGER s tag").isEqualTo((byte) 0x02);
+        int sLength = signature[5 + rLength] & 0xFF;
+        assertThat(6 + rLength + sLength).as("the two INTEGERs fill the SEQUENCE").isEqualTo(signature.length);
+    }
+
+    /** The certificate {@code id} refers to, decoded from the container exactly as an OEM would decode it. */
+    private static X509Certificate certificateIn(S100SECertificateContainerType container, String id) throws Exception {
+        S100SECertificateType carried = container.getCertificates().stream()
+                .filter(c -> id.equals(c.getId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no certificate with id " + id + " is carried"));
+        return (X509Certificate) CertificateFactory.getInstance("X.509")
+                .generateCertificate(new ByteArrayInputStream(carried.getValue()));
+    }
+
+    /** The first (for a dataset entry, the mandatory S100_SE_SignatureOnData) signature of an entry. */
+    private static S100SESignatureOnData dataSignatureOf(S100DatasetDiscoveryMetadata entry) {
+        return (S100SESignatureOnData) entry.getDigitalSignatureValues().get(0)
+                .getS100SEDigitalSignature().getValue();
+    }
+
+    private static S100DatasetDiscoveryMetadata firstEntryOf(byte[] zip) throws Exception {
+        return catalogueOf(zip).getDatasetDiscoveryMetadata().getS100DatasetDiscoveryMetadatas().get(0);
+    }
+
+    /** A cancellation-only exchange set built under the given current chain, with dummy signatures. */
+    private static byte[] cancellationExchangeSet(S124ExchangeSetFactory.Cancellation cancellation,
+            String certificatePem, List<String> intermediatePems) {
+        return S124ExchangeSetFactory.builder()
+                .cancellations(List.of(cancellation))
+                .organization("Danish Maritime Authority")
+                .producerCode("DK00")
+                .certificatePem(certificatePem)
+                .intermediateCertificatePems(intermediatePems)
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
+                .phone("+4572196000")
+                .build()
+                .toBytes();
+    }
+
     /**
      * Clause 17-4.4.1: the cancellation entry keeps "all other mandatory metadata fields also
      * set to the same values as the original, with the exception of the issueDate". They must
@@ -717,7 +1009,7 @@ class S124ExchangeSetFactoryTest {
                 .classification(SecurityClassification.RESTRICTED)
                 .datasetComment("a comment that did not exist back then")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+9900000000")
                 .build()
                 .toBytes();
@@ -767,7 +1059,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -820,7 +1112,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -859,7 +1151,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -887,7 +1179,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1002,7 +1294,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .validateAgainstSchema(false)
                 .build()
@@ -1016,7 +1308,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1037,7 +1329,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -1066,7 +1358,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1097,7 +1389,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1118,7 +1410,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -1144,7 +1436,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1177,7 +1469,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .validateAgainstSchema(false)
                 .build()
@@ -1200,7 +1492,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -1222,7 +1514,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build();
 
@@ -1245,7 +1537,7 @@ class S124ExchangeSetFactoryTest {
                     .organization("DMA")
                     .producerCode(producerCode)
                     .certificatePem(testCertPem)
-                    .signer((alg, payload) -> new byte[64]);
+                    .signer((alg, payload) -> DUMMY_SIGNATURE);
 
             assertThatThrownBy(builder::build)
                     .as("producerCode \"%s\"", producerCode)
@@ -1294,7 +1586,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .emails(List.of("nautinf@dma.dk"))
                 .phone("+4572196000")
                 .city("Korsoer")
@@ -1325,7 +1617,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1352,7 +1644,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1436,7 +1728,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[32])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1469,7 +1761,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1493,7 +1785,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("Danish Maritime Authority")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> { signCalls.incrementAndGet(); return new byte[64]; })
+                .signer((alg, payload) -> { signCalls.incrementAndGet(); return DUMMY_SIGNATURE; })
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1540,7 +1832,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1585,7 +1877,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64]);
+                .signer((alg, payload) -> DUMMY_SIGNATURE);
 
         assertThatThrownBy(b::build)
                 .isInstanceOf(IllegalArgumentException.class)
@@ -1606,7 +1898,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .build()
                 .toBytes();
@@ -1873,7 +2165,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .locales(List.of(Locale.forLanguageTag("da")))
                 .build()
@@ -2047,7 +2339,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .country("Denmark")
                 .build()
@@ -2087,7 +2379,7 @@ class S124ExchangeSetFactoryTest {
                 .organization("DMA")
                 .producerCode("DK00")
                 .certificatePem(testCertPem)
-                .signer((alg, payload) -> new byte[64])
+                .signer((alg, payload) -> DUMMY_SIGNATURE)
                 .phone("+4572196000")
                 .validateAgainstSchema(false)
                 .build()

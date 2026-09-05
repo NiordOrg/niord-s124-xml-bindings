@@ -211,9 +211,9 @@ The scenarios cover an unlit buoy, cable work, drifting containers, a firing
 exercise, an unlit turbine and a bridge closure. They demonstrate points, curves,
 surfaces, English/Danish text and references to warnings in force.
 
-Each dataset and each catalogue is XSD-validated before being written. If OpenSSL
-is available and key creation succeeds, the generator uses a temporary P-384 key
-and self-signed certificate. Otherwise it uses the test certificate with dummy
-signature bytes; inspect the generated README for the actual mode. The examples
-are for development, not operational navigation or a trusted certificate chain.
+Each dataset and each catalogue is XSD-validated before being written. The
+generator creates a temporary P-384 key and self-signed certificate in the JVM and
+signs with real `SHA384withECDSA` signatures in the DER form S-100 Part 15 embeds;
+OpenSSL is not needed. The examples are for development, not operational
+navigation or a trusted certificate chain.
 Re-running the generator clears its previous dataset and exchange-set output.

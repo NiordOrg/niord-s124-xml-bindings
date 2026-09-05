@@ -53,15 +53,39 @@ needs an explicit envelope. The example generator demonstrates that case.
 ## Supply a signer
 
 `S124Signer.sign(algorithm, payload)` receives the exact bytes to sign and returns
-the signature bytes. The factory invokes it for each dataset and for the final
+the signature. The factory invokes it for each dataset and for the final
 catalogue. Key storage and signing are the application's responsibility; a
 keystore, HSM or signing service can implement the callback.
 
-The builder defaults to `ECDSA_384_SHA_2` and rejects other algorithms. The
-repository's example generator implements the callback with Java's
-`SHA384withECDSA` and a P-384 private key. See its
-[signer setup](../s-124/src/test/java/dk/dma/niord/s100/xmlbindings/s124/v2_0_0/examples/DanishWatersExamplesGenerator.java)
-for a working development example.
+The builder defaults to `ECDSA_384_SHA_2` and rejects other algorithms.
+
+### Signature encoding
+
+Return the signature as S-100 Part 15, clause 15-8.4, embeds it: the ASN.1 DER
+`SEQUENCE` of the two ECDSA integers r and s, **not** Base64 encoded. That is what
+Java's `SHA384withECDSA` returns and what OpenSSL produces:
+
+```java
+S124Signer signer = (algorithm, payload) -> {
+    Signature ecdsa = Signature.getInstance("SHA384withECDSA");
+    ecdsa.initSign(privateKey);
+    ecdsa.update(payload);
+    return ecdsa.sign();
+};
+```
+
+The factory performs no conversion. JAXB applies the single Base64 layer when it
+writes the `xs:base64Binary` signature elements. A value that is not a DER sequence
+of two integers is rejected with `ExchangeSetException` before anything is
+packaged. The common mistake is the raw 96-byte `r||s` form produced by
+`SHA384withECDSAinP1363Format`: it verifies in your own code, but no Part 15
+reader can decode it.
+
+The repository's tests generate throwaway P-384 keys and certificates in the JVM
+(`SigningIdentityFixture`, BouncyCastle in test scope only) and verify real signatures
+end to end. The
+[example generator](../s-124/src/test/java/dk/dma/niord/s100/xmlbindings/s124/v2_0_0/examples/DanishWatersExamplesGenerator.java)
+signs with the same class.
 
 Use a signing key that matches `certificatePem`. If a Domain Coordinator issued
 the certificate, supply its intermediate certificate chain through
@@ -81,9 +105,10 @@ String certificatePem = java.nio.file.Files.readString(java.nio.file.Path.of("si
         .replaceAll("\\s", "");
 ```
 
-The callback output is packaged as supplied; the factory is not an end-to-end
-signature verifier or a substitute for consumer trust validation. A successful
-ZIP build alone does not prove the callback used the matching private key.
+The factory checks the shape of the callback output, not the key behind it. It is
+not a signature verifier or a substitute for consumer trust validation, and a
+successful ZIP build alone does not prove the callback used the private key that
+matches `certificatePem`.
 
 ## ZIP layout
 
@@ -164,6 +189,23 @@ For counter-signed originals, the full constructor additionally accepts a map
 of counter-signer chains keyed by their original `certificateRef` values. This
 allows the factory to preserve signature chains and update certificate references
 within the new catalogue.
+
+Retain the original catalogue entry and the certificate chain that signed it
+together. The factory copies the entry and never modifies it, so the same record
+can be reused in later exchange sets under whichever certificate is then current.
+Passing the current certificate as the original chain is harmless: identical
+certificates are carried once, and the reused signature references the current
+entry.
+
+### Migrating from 0.0.12
+
+`Cancellation` used to take the file name, identifiers, bounding box and a list of
+signature objects whose `certificateRef` the caller had to set to the factory's
+internal `cer1`. That constructor is gone, and it never survived a certificate
+rotation. Pass the retained `S100DatasetDiscoveryMetadata` entry instead, together
+with the chain that signed it; the factory allocates every certificate id and
+rewrites the references itself. Signers must return DER-encoded signatures (see
+above); the factory now rejects any other form.
 
 See the [exchange-set tests](../s-124/src/test/java/dk/dma/niord/s100/xmlbindings/s124/v2_0_0/exchangesets/S124ExchangeSetFactoryTest.java)
 for cancellation, rollover and certificate-chain examples.

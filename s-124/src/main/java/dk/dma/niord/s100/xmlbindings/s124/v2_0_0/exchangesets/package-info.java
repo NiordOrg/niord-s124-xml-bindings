@@ -108,8 +108,18 @@
  * {@link dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets.S124Signer}, which keeps key
  * material out of this library: back it with a keystore, an HSM or a remote signing service.
  * The algorithm defaults to {@code ECDSA-384-SHA2}, which clause 15-8.7 mandates
- * ("The digitalSignatureReference field must be encoded 'ECDSA-384-SHA2'"). The signer must
- * return the ECDSA R,S pair; the factory base64-encodes it into the XML.</p>
+ * ("The digitalSignatureReference field must be encoded 'ECDSA-384-SHA2'").</p>
+ *
+ * <h2>Signature encoding</h2>
+ *
+ * <p>The signer returns the signature in the form clause 15-8.4 embeds: the ASN.1 DER
+ * {@code SEQUENCE} of the two ECDSA {@code INTEGER}s r and s, "produced natively by the openssl
+ * implementation" and by {@code java.security.Signature} for {@code "SHA384withECDSA"}. The
+ * factory converts nothing. JAXB Base64-encodes those bytes once, as the {@code xs:base64Binary}
+ * signature elements require, and the factory rejects a value that is not such a sequence - in
+ * particular the raw 96-byte r||s form that {@code "SHA384withECDSAinP1363Format"} returns,
+ * which verifies in the producer's own code but which no Part 15 reader can decode. A reused
+ * cancellation signature (below) is copied byte for byte and is not re-checked.</p>
  *
  * <h2>Cancellations and certificate rotation</h2>
  *

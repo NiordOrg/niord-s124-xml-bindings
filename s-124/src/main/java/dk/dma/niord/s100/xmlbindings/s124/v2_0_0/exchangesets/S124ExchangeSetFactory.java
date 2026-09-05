@@ -91,6 +91,11 @@ import jakarta.xml.bind.Marshaller;
  *         .toBytes();
  * }</pre>
  *
+ * <p>The signer returns each signature in the form S-100 Part 15, clause 15-8.4, embeds - the
+ * ASN.1 DER {@code SEQUENCE} of the ECDSA integers r and s, as {@code java.security.Signature}
+ * yields for {@code "SHA384withECDSA"} - and the factory embeds it unchanged; see
+ * {@link S124Signer} for the contract and what is rejected.</p>
+ *
  * <p>The factory wraps {@link S100ExchangeCatalogueBuilder} and produces the folder
  * structure of S-100 Ed 5.x Part 17, clause 17-4.2:</p>
  * <pre>
@@ -159,6 +164,13 @@ import jakarta.xml.bind.Marshaller;
 public final class S124ExchangeSetFactory {
 
     private static final String CERTIFICATE_REF = "cer1";
+    /**
+     * The length of an ECDSA P-384 signature in the raw r||s form (IEEE P1363), which S-100 Part
+     * 15 does not use; see {@link #requireDerEcdsaSignature(byte[], String)}.
+     */
+    private static final int P384_RAW_SIGNATURE_LENGTH = 96;
+    /** The longest DER INTEGER a P-384 value needs: 48 magnitude bytes plus a sign byte when the high bit is set. */
+    private static final int MAX_P384_INTEGER_LENGTH = 49;
     private static final String DEFAULT_DATASET_MRN_PREFIX = "urn:mrn:iho:s124";
     private static final String DEFAULT_EXCHANGE_SET_MRN_PREFIX = "urn:mrn:iho:s124:exchangeset";
     /** S-124 clause 12.2.2 fixes specificUsage: "Must always be 'Navigational Warning Service'". */
@@ -397,7 +409,7 @@ public final class S124ExchangeSetFactory {
         standaloneSignature.setFilename(CATALOG_FILE_NAME);
         standaloneSignature.setCertificates(certificates);
         standaloneSignature.setDigitalSignature(
-                signatureOnData("catalogueSig", cfg.signatureAlgorithm, catalogBytes));
+                signatureOnData("catalogueSig", CATALOG_FILE_NAME, cfg.signatureAlgorithm, catalogBytes));
 
         JAXBContext jaxbContext = JAXBContext.newInstance(
                 StandaloneDigitalSignature.class.getPackageName(),
@@ -671,14 +683,112 @@ public final class S124ExchangeSetFactory {
      * 15-8.11.4, realize a signature over a data resource as S100_SE_SignatureOnData, which
      * carries the mandatory dataStatus; S-124 data is never compressed or encrypted, so the
      * status is always unencrypted.
+     * <p/>
+     * The signer's bytes go into the element as they are - the element is typed
+     * {@code xs:base64Binary}, so JAXB applies the one Base64 layer clause 15-8.4 calls for -
+     * after {@link #requireDerEcdsaSignature(byte[], String)} has checked that they are in the
+     * form that clause embeds. {@code signedObject} names the resource in that check's failure.
      */
-    private S100SESignatureOnData signatureOnData(String id, S100SEDigitalSignatureReference algorithm, byte[] payload) {
+    private S100SESignatureOnData signatureOnData(String id, String signedObject,
+            S100SEDigitalSignatureReference algorithm, byte[] payload) {
         S100SESignatureOnData signature = new S100SESignatureOnData();
         signature.setId(id);
         signature.setCertificateRef(CERTIFICATE_REF);
         signature.setDataStatus(DataStatus.UNENCRYPTED);
-        signature.setValue(cfg.signer.sign(algorithm, payload));
+        signature.setValue(requireDerEcdsaSignature(cfg.signer.sign(algorithm, payload), signedObject));
         return signature;
+    }
+
+    /**
+     * Checks that a signature the configured signer returned is in the one form S-100 Part 15
+     * embeds. Clause 15-8.4: "In the ECDSA algorithm a signature is a sequence of two integers.
+     * By convention these are referred to as R and S (an 'R,S pair')... The encoding of the two
+     * R,S large integers is a Base64 ASN.1 byte sequence. These are produced natively by the
+     * openssl implementation... The ASN.1 sequence representing the R,S pair is then Base64 (RFC
+     * 4648) encoded for representation in the XML digital signature elements." The value handed
+     * to the catalogue is therefore the DER {@code SEQUENCE} of two {@code INTEGER}s - what
+     * {@code java.security.Signature} returns for {@code "SHA384withECDSA"} - and the factory
+     * converts nothing: the Base64 layer is applied once, by JAXB, because the signature elements
+     * are typed {@code xs:base64Binary}.
+     * <p/>
+     * The check is structural, not cryptographic: it cannot tell whether the signer used the key
+     * the certificate certifies, only whether it returned bytes a Part 15 reader can decode at
+     * all. The mistake it exists to catch is the raw r||s concatenation - the IEEE P1363 form,
+     * which the JCA {@code "SHA384withECDSAinP1363Format"} algorithm returns as exactly 96 bytes
+     * for P-384. A producer signing and verifying with the same library never notices the
+     * difference, because both forms round-trip there; only an ECDIS reading the exchange set
+     * does, and by then the set has shipped.
+     */
+    private static byte[] requireDerEcdsaSignature(byte[] signature, String signedObject) {
+        String problem = derEcdsaSequenceProblem(signature);
+        if (problem == null) {
+            return signature;
+        }
+        String hint = signature != null && signature.length == P384_RAW_SIGNATURE_LENGTH
+                ? " A value of exactly 96 bytes is the raw r||s concatenation (the IEEE P1363 form, which "
+                        + "the JCA algorithm \"SHA384withECDSAinP1363Format\" returns); sign with "
+                        + "\"SHA384withECDSA\" instead."
+                : "";
+        throw new ExchangeSetException(String.format(
+                "The signer returned a signature over %s that is not the ASN.1 DER SEQUENCE of the two "
+                        + "ECDSA INTEGERs r and s, which S-100 Part 15, clause 15-8.4, embeds (Base64 "
+                        + "encoded) in the catalogue: %s.%s The factory performs no conversion; the "
+                        + "signer must return the DER form, as java.security.Signature "
+                        + "\"SHA384withECDSA\" and openssl do.",
+                signedObject, problem, hint));
+    }
+
+    /**
+     * Why {@code signature} is not a DER {@code SEQUENCE} of two P-384 sized positive
+     * {@code INTEGER}s in their shortest encoding, or {@code null} when it is one.
+     */
+    private static String derEcdsaSequenceProblem(byte[] signature) {
+        if (signature == null || signature.length == 0) {
+            return "the signer returned no bytes";
+        }
+        if (signature[0] != 0x30) {
+            return String.format("the value is %d bytes and does not start with the SEQUENCE tag 0x30",
+                    signature.length);
+        }
+        // A P-384 signature is at most 2 + 2 * (2 + 49) = 104 bytes, so DER's short length form
+        // (a single byte below 0x80) always suffices.
+        if (signature.length < 2 || (signature[1] & 0x80) != 0) {
+            return "the SEQUENCE length is not in the single byte form a P-384 signature always fits";
+        }
+        int sequenceLength = signature[1] & 0xFF;
+        if (sequenceLength != signature.length - 2) {
+            return String.format("the SEQUENCE declares %d content bytes but %d follow",
+                    sequenceLength, signature.length - 2);
+        }
+        int offset = 2;
+        for (String name : new String[] {"r", "s"}) {
+            if (offset + 2 > signature.length || signature[offset] != 0x02) {
+                return "INTEGER " + name + " is missing or does not carry the INTEGER tag 0x02";
+            }
+            int length = signature[offset + 1] & 0xFF;
+            if (length == 0 || length > MAX_P384_INTEGER_LENGTH) {
+                return String.format("INTEGER %s declares %d bytes, but a P-384 value takes 1 to %d",
+                        name, length, MAX_P384_INTEGER_LENGTH);
+            }
+            if (offset + 2 + length > signature.length) {
+                return "INTEGER " + name + " runs past the end of the value";
+            }
+            if ((signature[offset + 2] & 0x80) != 0) {
+                return "INTEGER " + name + " is negative, which an ECDSA signature value never is";
+            }
+            // DER admits one encoding per integer: a leading 0x00 is allowed only as the sign
+            // byte before a magnitude whose high bit is set. Anything longer is BER, and Java's
+            // verifier refuses it outright ("Invalid encoding for signature") rather than
+            // reading the same number, so it must not be packaged either.
+            if (length > 1 && signature[offset + 2] == 0x00 && (signature[offset + 3] & 0x80) == 0) {
+                return "INTEGER " + name + " carries a redundant leading zero byte, which DER forbids";
+            }
+            offset += 2 + length;
+        }
+        if (offset != signature.length) {
+            return String.format("%d trailing bytes follow the two INTEGERs", signature.length - offset);
+        }
+        return null;
     }
 
     private String buildCatalogueXml(List<DatasetFile> datasetFiles) throws JAXBException, CertificateException {
@@ -686,7 +796,8 @@ public final class S124ExchangeSetFactory {
 
         S100ExchangeCatalogueBuilder catBuilder = new S100ExchangeCatalogueBuilder(
                 (objectId, algorithm, payload) -> signatureOnData(
-                        String.format("sig%d", signatureCounter.getAndIncrement()), algorithm, payload))
+                        String.format("sig%d", signatureCounter.getAndIncrement()), String.valueOf(objectId),
+                        algorithm, payload))
                 .setIdentifier(cfg.identifier)
                 // Part 17 mandates the format yyyy-mm-ddThh:mm:ssZ, i.e. UTC, for the
                 // exchange catalogue identifier's creation date and time.

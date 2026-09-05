@@ -7,10 +7,6 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyFactory;
-import java.security.PrivateKey;
-import java.security.Signature;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -74,6 +70,7 @@ import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.WarningInformationType;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.WarningTypeLabel;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets.S124ExchangeSetFactory;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets.S124Signer;
+import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.exchangesets.SigningIdentityFixture;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.GeometryS124Converter;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124Utils;
 import dk.dma.niord.s100.xmlbindings.s124.v2_0_0.util.S124XsdValidator;
@@ -689,67 +686,28 @@ class DanishWatersExamplesGenerator {
                                 S100SEDigitalSignatureReference algorithm, String note) {}
 
     /**
-     * Creates an EC P-384 key and self-signed certificate with openssl and returns a signer
-     * producing real ECDSA signatures. Falls back to the repository test certificate with
-     * dummy signature bytes if openssl or the JDK signature algorithm is unavailable.
+     * Creates an EC P-384 key and self-signed certificate in the JVM and returns a signer
+     * producing real ECDSA signatures in the form S-100 Part 15, clause 15-8.4, embeds - the DER
+     * SEQUENCE of r and s, which "SHA384withECDSA" yields. The key and certificate are written to
+     * {@code signingDir} in PEM form so the generated bundle documents what signed it.
      */
     private SignerBundle createSigner(Path signingDir) throws Exception {
-        try {
-            Path keyPem = signingDir.resolve("example-signer-key.pem");
-            Path keyPkcs8 = signingDir.resolve("example-signer-key-pkcs8.pem");
-            Path certPem = signingDir.resolve("example-signer-cert.pem");
-            run(signingDir, "openssl", "ecparam", "-name", "secp384r1", "-genkey", "-noout",
-                    "-out", keyPem.getFileName().toString());
-            run(signingDir, "openssl", "req", "-new", "-x509", "-key", keyPem.getFileName().toString(),
-                    "-sha384", "-days", "3650",
-                    "-subj", "/C=DK/O=Danish Maritime Authority/OU=Example Only/CN=S-124 Example Signer",
-                    "-out", certPem.getFileName().toString());
-            run(signingDir, "openssl", "pkcs8", "-topk8", "-nocrypt",
-                    "-in", keyPem.getFileName().toString(), "-out", keyPkcs8.getFileName().toString());
-
-            String pkcs8 = Files.readString(keyPkcs8)
-                    .replaceAll("-----(BEGIN|END) PRIVATE KEY-----", "").replaceAll("\\s", "");
-            PrivateKey key = KeyFactory.getInstance("EC")
-                    .generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(pkcs8)));
-
-            // S-100 Part 15, clause 15-8.7 mandates ECDSA-384-SHA2; the library rejects anything else.
-            String jcaAlgorithm = "SHA384withECDSA";
-            S100SEDigitalSignatureReference reference = S100SEDigitalSignatureReference.ECDSA_384_SHA_2;
-            String finalAlgorithm = jcaAlgorithm;
-            S124Signer signer = (algorithm, payload) -> {
-                try {
-                    Signature signature = Signature.getInstance(finalAlgorithm);
-                    signature.initSign(key);
-                    signature.update(payload);
-                    return signature.sign();
-                } catch (Exception e) {
-                    throw new IllegalStateException("Signing failed", e);
-                }
-            };
-            // The catalogue builder expects the bare base64 certificate body, not the PEM armour.
-            String certBase64 = Files.readString(certPem)
-                    .replaceAll("-----(BEGIN|END) CERTIFICATE-----", "").replaceAll("\\s", "");
-            return new SignerBundle(certBase64, signer, reference,
-                    "Real ECDSA " + jcaAlgorithm + " signatures with a throwaway self-signed "
-                            + "EC P-384 certificate (see signing/).");
-        } catch (IOException e) {
-            System.out.println("openssl unavailable (" + e.getMessage() + ") - falling back to dummy signatures");
-            String certPem;
-            try (var in = DanishWatersExamplesGenerator.class.getResourceAsStream("/test-cert.pem")) {
-                certPem = new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
-            }
-            return new SignerBundle(certPem, (algorithm, payload) -> new byte[96],
-                    S100SEDigitalSignatureReference.ECDSA_384_SHA_2,
-                    "Dummy signature bytes (openssl was unavailable); certificate is the repository test certificate.");
-        }
+        SigningIdentityFixture identity = SigningIdentityFixture.selfSigned("S-124 Example Signer");
+        Files.writeString(signingDir.resolve("example-signer-cert.pem"),
+                pem("CERTIFICATE", identity.certificate().getEncoded()));
+        Files.writeString(signingDir.resolve("example-signer-key-pkcs8.pem"),
+                pem("PRIVATE KEY", identity.privateKey().getEncoded()));
+        return new SignerBundle(identity.certificatePem(), identity.signer(),
+                S100SEDigitalSignatureReference.ECDSA_384_SHA_2,
+                "Real ECDSA " + SigningIdentityFixture.JCA_ALGORITHM + " signatures - the DER SEQUENCE of r and s "
+                        + "that S-100 Part 15, clause 15-8.4, embeds - made with a throwaway self-signed EC "
+                        + "P-384 certificate generated for this run (see signing/).");
     }
 
-    private static void run(Path dir, String... command) throws IOException, InterruptedException {
-        Process process = new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true).start();
-        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        if (!process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) || process.exitValue() != 0) {
-            throw new IOException("Command failed: " + String.join(" ", command) + "\n" + output);
-        }
+    private static String pem(String label, byte[] der) {
+        return "-----BEGIN " + label + "-----\n"
+                + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(der)
+                + "\n-----END " + label + "-----\n";
     }
 
     // ------------------------------------------------------------------

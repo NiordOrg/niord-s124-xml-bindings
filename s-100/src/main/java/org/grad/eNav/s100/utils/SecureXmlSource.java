@@ -12,17 +12,15 @@ import javax.xml.parsers.SAXParserFactory;
 import javax.xml.transform.sax.SAXSource;
 import java.io.ByteArrayInputStream;
 import java.io.StringReader;
-import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
  * Builds the XML source this library parses foreign documents through.
  * <p/>
- * The rule, rather than a list of the call sites that follow it today: every path in the S-100
- * 5.2.0 and S-124 2.0.0 code that parses XML it did not itself produce goes through this class.
- * The legacy {@code dk.baleen.s100.xmlbindings.s124.v1_0_0} package predates the rule and is
- * exempt - it still parses with a default JAXP parser, and is the one place a reader must not
- * assume the rule holds.
+ * The rule, rather than a list of the call sites that follow it today: every path in this library
+ * that parses XML it did not itself produce goes through this class, without exemption. The legacy
+ * {@code dk.baleen.s100.xmlbindings.s124.v1_0_0} utilities were the one place the rule did not
+ * hold; they were deleted rather than hardened, since nothing consumed them.
  * <p/>
  * A JAXB {@code Unmarshaller} handed a raw {@code InputStream}, and a JAXP {@code Validator}
  * handed a raw {@code StreamSource}, parse with a default JAXP parser: document type declarations
@@ -102,14 +100,6 @@ public final class SecureXmlSource {
     /**
      * Wraps the given XML bytes in a source backed by a parser that refuses DOCTYPEs and resolves
      * nothing off the document.
-     * <p/>
-     * The reader is namespace aware, which JAXB requires and which every document this library
-     * reads depends on, and is not XInclude aware, XInclude being a second way to pull a file or a
-     * URL into a document. Secure processing is enabled, which caps the JDK's entity expansion and
-     * name limits as a further backstop behind the DOCTYPE refusal.
-     * <p/>
-     * A fresh reader is built per call: a SAX {@code XMLReader} is stateful and not safe to share
-     * between concurrent parses.
      *
      * @param xml the XML document bytes, in the encoding its own declaration names
      * @return a source that parses those bytes with entity resolution shut off
@@ -118,6 +108,46 @@ public final class SecureXmlSource {
      */
     public static SAXSource of(byte[] xml) throws JAXBException {
         Objects.requireNonNull(xml, "xml is null");
+        // Bytes are undecoded, so the encoding declaration they carry is the parser's to honour.
+        return new SAXSource(secureReader(), new InputSource(new ByteArrayInputStream(xml)));
+    }
+
+    /**
+     * Wraps an XML document already decoded to a string, the form every read path in this library
+     * holds one in.
+     * <p/>
+     * The string is handed to the parser as characters rather than re-encoded to bytes. A string
+     * has already been decoded, so the encoding pseudo-attribute of its own declaration describes
+     * bytes that no longer exist, and a parser given those characters back as UTF-8 bytes would
+     * obey the declaration anyway: a document declaring {@code encoding="ISO-8859-1"} would be
+     * decoded as Latin-1 and every non-ASCII character in it - every Danish place name in a
+     * navigational warning - would come back as mojibake, and one declaring a UTF-16 encoding
+     * would not parse at all. {@link InputSource} is explicit that a parser reads an available
+     * character stream directly and disregards any encoding declaration found in it, which is the
+     * guarantee this overload needs: the caller decoded the document, and that decoding stands.
+     *
+     * @param xml the XML document
+     * @return a source that parses it with entity resolution shut off
+     * @throws JAXBException if the platform's parser cannot be configured to refuse DOCTYPEs and
+     *                       external entities, in which case nothing is parsed
+     */
+    public static SAXSource of(String xml) throws JAXBException {
+        Objects.requireNonNull(xml, "xml is null");
+        return new SAXSource(secureReader(), new InputSource(new StringReader(xml)));
+    }
+
+    /**
+     * The reader both overloads parse with.
+     * <p/>
+     * It is namespace aware, which JAXB requires and which every document this library reads
+     * depends on, and is not XInclude aware, XInclude being a second way to pull a file or a URL
+     * into a document. Secure processing is enabled, which caps the JDK's entity expansion and
+     * name limits as a further backstop behind the DOCTYPE refusal.
+     * <p/>
+     * A fresh reader is built per call: a SAX {@code XMLReader} is stateful and not safe to share
+     * between concurrent parses.
+     */
+    private static XMLReader secureReader() throws JAXBException {
         try {
             final SAXParserFactory factory = SAXParserFactory.newInstance();
             factory.setNamespaceAware(true);
@@ -139,7 +169,7 @@ public final class SecureXmlSource {
                         "The parser accepted but did not apply %s", DISALLOW_DOCTYPE_DECL));
             }
 
-            return new SAXSource(reader, new InputSource(new ByteArrayInputStream(xml)));
+            return reader;
         } catch (ParserConfigurationException | SAXException e) {
             // Fail closed: report the misconfiguration as the checked exception the read paths
             // already declare, rather than falling back to a parser that would honour a DOCTYPE.
@@ -147,21 +177,6 @@ public final class SecureXmlSource {
                     "Refusing to parse XML: this platform's SAX parser cannot be configured to "
                             + "reject document type declarations and external entities", e);
         }
-    }
-
-    /**
-     * Wraps an XML document already decoded to a string, the form every read path in this library
-     * holds one in. The characters are re-encoded as UTF-8, the encoding the marshalling side of
-     * {@code S100ExchangeSetUtils} writes and declares.
-     *
-     * @param xml the XML document
-     * @return a source that parses it with entity resolution shut off
-     * @throws JAXBException if the platform's parser cannot be configured to refuse DOCTYPEs and
-     *                       external entities, in which case nothing is parsed
-     */
-    public static SAXSource of(String xml) throws JAXBException {
-        Objects.requireNonNull(xml, "xml is null");
-        return of(xml.getBytes(StandardCharsets.UTF_8));
     }
 
 }

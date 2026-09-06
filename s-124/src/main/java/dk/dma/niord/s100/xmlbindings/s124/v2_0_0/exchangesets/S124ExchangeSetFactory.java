@@ -1819,6 +1819,63 @@ public final class S124ExchangeSetFactory {
 
         private Builder() {}
 
+        /**
+         * The snapshot {@link #build()} hands the factory, so that the factory reads a
+         * configuration nobody else holds a reference to.
+         * <p/>
+         * The factory keeps its builder and reads it lazily, at {@code toBytes()} /
+         * {@code toExchangeSet()} time rather than at build time, so without this copy a caller
+         * who kept the builder - to publish a second exchange set from the same producer details,
+         * the reason a builder is reusable at all - would retroactively change what an already
+         * built factory packages and signs. Every field is copied, so a field added above must be
+         * added here too; {@code S124ExchangeSetFactoryTest.everyBuilderFieldIsCarriedIntoTheSnapshot}
+         * fails if one is forgotten. The list fields are copied rather than aliased, which fixes
+         * the same exposure one level down: a caller mutating the list it passed to
+         * {@code datasets(List)} would otherwise change what the factory packages.
+         */
+        private Builder(Builder other) {
+            this.datasets = copyOfNullable(other.datasets);
+            this.cancellations = copyOfNullable(other.cancellations);
+            this.organization = other.organization;
+            this.producerCode = other.producerCode;
+            this.certificatePem = other.certificatePem;
+            this.intermediateCertificatePems = copyOfNullable(other.intermediateCertificatePems);
+            this.signer = other.signer;
+            this.identifier = other.identifier;
+            this.dataServerIdentifier = other.dataServerIdentifier;
+            this.datasetMrnPrefix = other.datasetMrnPrefix;
+            this.validateAgainstSchema = other.validateAgainstSchema;
+            this.productSpecification = other.productSpecification;
+            this.description = other.description;
+            this.comment = other.comment;
+            this.datasetComment = other.datasetComment;
+            this.specificUsage = other.specificUsage;
+            this.emails = copyOfNullable(other.emails);
+            this.phone = other.phone;
+            this.phoneType = other.phoneType;
+            this.city = other.city;
+            this.postalCode = other.postalCode;
+            this.country = other.country;
+            this.administrativeArea = other.administrativeArea;
+            this.locales = copyOfNullable(other.locales);
+            this.schemeAdministrator = other.schemeAdministrator;
+            this.signatureAlgorithm = other.signatureAlgorithm;
+            this.notForNavigation = other.notForNavigation;
+            this.classification = other.classification;
+            this.producingAgencyRole = other.producingAgencyRole;
+            this.onlineResource = other.onlineResource;
+            this.contactInstructions = other.contactInstructions;
+        }
+
+        /**
+         * {@link List#copyOf} but tolerating null, which the setters allow and {@link #build()}
+         * reports on its own terms - a null list must still reach that report as null rather than
+         * as a {@code NullPointerException} thrown while copying it.
+         */
+        private static <T> List<T> copyOfNullable(List<T> list) {
+            return list == null ? null : List.copyOf(list);
+        }
+
         public Builder datasets(List<Dataset> datasets) { this.datasets = datasets; return this; }
         /** Fileless dataset cancellations (S-100 Part 17, clause 17-4.4.1); see {@link Cancellation}. */
         public Builder cancellations(List<Cancellation> cancellations) { this.cancellations = cancellations; return this; }
@@ -1975,23 +2032,26 @@ public final class S124ExchangeSetFactory {
             Objects.requireNonNull(locales, "locales must be set");
             Objects.requireNonNull(emails, "emails must be set");
 
-            if (identifier == null) {
-                identifier = DEFAULT_EXCHANGE_SET_MRN_PREFIX + ":" + UUID.randomUUID();
+            // The factory reads its builder lazily, when the exchange set is packaged, so what it
+            // packages is fixed here instead: it gets a snapshot the caller does not hold, and a
+            // builder kept for a second exchange set can no longer change the first one.
+            final Builder snapshot = new Builder(this);
+            // Filled on the snapshot rather than on this builder, because both are per exchange
+            // set - a fresh MRN and a timestamped description - and a second build() from the same
+            // builder must generate its own rather than inherit the first exchange set's.
+            if (snapshot.identifier == null) {
+                snapshot.identifier = DEFAULT_EXCHANGE_SET_MRN_PREFIX + ":" + UUID.randomUUID();
             }
-            if (dataServerIdentifier == null) {
-                dataServerIdentifier = UUID.nameUUIDFromBytes(organization.getBytes(StandardCharsets.UTF_8)).toString();
+            if (snapshot.dataServerIdentifier == null) {
+                snapshot.dataServerIdentifier =
+                        UUID.nameUUIDFromBytes(organization.getBytes(StandardCharsets.UTF_8)).toString();
             }
-            if (description == null) {
-                description = String.format("S-124 Exchange Set generated by %s at %sZ",
+            if (snapshot.description == null) {
+                snapshot.description = String.format("S-124 Exchange Set generated by %s at %sZ",
                         organization,
                         LocalDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
             }
-            // The setters keep the caller's lists, so what the factory packages is fixed here:
-            // ExchangeSet.datasets() promises correspondence with the list given to
-            // datasets(List), which a caller that mutates that list afterwards would break.
-            this.datasets = List.copyOf(datasets);
-            this.cancellations = List.copyOf(cancellations);
-            return new S124ExchangeSetFactory(this);
+            return new S124ExchangeSetFactory(snapshot);
         }
     }
 

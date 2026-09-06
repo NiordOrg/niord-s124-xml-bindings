@@ -13,6 +13,10 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.security.GeneralSecurityException;
 import java.security.Signature;
 import java.security.cert.CertificateFactory;
@@ -2392,6 +2396,116 @@ class S124ExchangeSetFactoryTest {
                 .discoveryMetadata();
         return new S124ExchangeSetFactory.Cancellation(
                 original, original.getIssueDate().plusDays(1), certificatePems);
+    }
+
+    /**
+     * A builder kept for a second exchange set - the only reason a fluent builder is reusable at
+     * all - must not change an exchange set already built from it. The factory reads its
+     * configuration when the ZIP is packaged rather than when {@code build()} returns, so before
+     * the snapshot this published the wrong dataset: the caller asked for the first and got the
+     * second, packaged and signed under the first exchange set's identity.
+     */
+    @Test
+    void reusingTheBuilderDoesNotChangeAnAlreadyBuiltFactory() throws Exception {
+        Dataset first = newDataset("DK.S124.builder-reuse-first");
+        Dataset second = newDataset("DK.S124.builder-reuse-second");
+        S124ExchangeSetFactory.Builder builder = publisher().datasets(List.of(first));
+        S124ExchangeSetFactory factory = builder.build();
+
+        builder.datasets(List.of(second));
+
+        assertThat(factory.toExchangeSet().datasets())
+                .extracting(S124ExchangeSetFactory.PublishedDataset::dataset)
+                .containsExactly(first);
+    }
+
+    /** The same guarantee one level down: the list itself is copied, not aliased. */
+    @Test
+    void mutatingTheDatasetListAfterBuildDoesNotChangeWhatIsPackaged() throws Exception {
+        List<Dataset> datasets = new ArrayList<>(List.of(newDataset("DK.S124.list-copy")));
+        S124ExchangeSetFactory factory = publisher().datasets(datasets).build();
+
+        datasets.add(newDataset("DK.S124.list-copy-added"));
+
+        assertThat(factory.toExchangeSet().datasets()).hasSize(1);
+    }
+
+    /**
+     * Each {@code build()} is a distinct exchange set and gets a distinct identifier. The generated
+     * default used to be written back onto the builder, so a second exchange set built from it
+     * inherited the first one's MRN - two artefacts claiming one identity.
+     */
+    @Test
+    void eachBuildFromOneBuilderGetsItsOwnExchangeSetIdentifier() throws Exception {
+        S124ExchangeSetFactory.Builder builder =
+                publisher().datasets(List.of(newDataset("DK.S124.identifier")));
+
+        String first = catalogueOf(builder.build().toBytes()).getIdentifier().getIdentifier();
+        String second = catalogueOf(builder.build().toBytes()).getIdentifier().getIdentifier();
+
+        assertThat(first).startsWith("urn:mrn:iho:s124:exchangeset:").isNotEqualTo(second);
+    }
+
+    /**
+     * The snapshot is written field by field, so a field added to the builder and forgotten there
+     * would go back to being read live off the caller's builder - silently, and only for callers
+     * who set it. This walks the declared fields rather than listing them: each is given a value
+     * the copy cannot produce by accident, and the snapshot has to carry it.
+     */
+    @Test
+    void everyBuilderFieldIsCarriedIntoTheSnapshot() throws Exception {
+        S124ExchangeSetFactory.Builder builder = S124ExchangeSetFactory.builder();
+        List<Field> fields = new ArrayList<>();
+        for (Field field : S124ExchangeSetFactory.Builder.class.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
+                continue;
+            }
+            field.setAccessible(true);
+            field.set(builder, sentinelFor(field, field.get(builder)));
+            fields.add(field);
+        }
+        Constructor<S124ExchangeSetFactory.Builder> copyConstructor = S124ExchangeSetFactory.Builder.class
+                .getDeclaredConstructor(S124ExchangeSetFactory.Builder.class);
+        copyConstructor.setAccessible(true);
+
+        S124ExchangeSetFactory.Builder snapshot = copyConstructor.newInstance(builder);
+
+        assertThat(fields).as("the builder declares fields to copy").isNotEmpty();
+        for (Field field : fields) {
+            assertThat(field.get(snapshot))
+                    .as("Builder.%s is not carried into the snapshot build() hands the factory",
+                            field.getName())
+                    .isSameAs(field.get(builder));
+        }
+    }
+
+    /**
+     * A value a forgotten copy cannot reproduce: null where the field declares a non-null default,
+     * a distinct object where it declares none, the other value for a boolean.
+     */
+    private static Object sentinelFor(Field field, Object current) {
+        Class<?> type = field.getType();
+        if (type == boolean.class) {
+            return !((boolean) current);
+        }
+        if (current != null) {
+            return null;
+        }
+        if (type == String.class) {
+            return "sentinel:" + field.getName();
+        }
+        if (type.isInterface()) {
+            return Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] {type},
+                    (proxy, method, args) -> switch (method.getName()) {
+                        case "toString" -> "sentinel:" + field.getName();
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        default -> null;
+                    });
+        }
+        throw new AssertionError(String.format(
+                "extend sentinelFor to give %s %s a value the copy cannot produce by accident",
+                type.getName(), field.getName()));
     }
 
     /** A factory builder carrying the mandatory details of the test producer. */

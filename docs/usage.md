@@ -3,8 +3,8 @@
 [Project overview](../README.md) · [Exchange sets](exchange-sets.md) · [Development](development.md)
 
 The examples use the current S-124 API under
-`dk.dma.niord.s100.xmlbindings.s124.v2_0_0`. Older utilities remain under
-`dk.baleen.s100.xmlbindings.s124.v1_0_0`; use the `v2_0_0` package for new integrations.
+`dk.dma.niord.s100.xmlbindings.s124.v2_0_0`, which is the only utility package the
+library ships.
 
 ## Read, validate and write a dataset
 

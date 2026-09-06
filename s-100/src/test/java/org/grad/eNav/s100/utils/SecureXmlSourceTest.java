@@ -112,6 +112,48 @@ class SecureXmlSourceTest {
         assertThrows(NullPointerException.class, () -> SecureXmlSource.of((String) null));
     }
 
+    /**
+     * A string has already been decoded, so its own encoding declaration describes bytes that no
+     * longer exist and must not decide how the parser reads it. This overload used to re-encode the
+     * string as UTF-8 and hand the parser those bytes, which obeyed the declaration below and
+     * returned mojibake for every non-ASCII character - silently, and only for the text a Danish
+     * navigational warning is most likely to carry.
+     */
+    @Test
+    void ignoresTheEncodingDeclarationOfADocumentGivenAsAString() throws Exception {
+        final String xml = "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><root>R\u00f8dbyhavn S\u00f8nderborg</root>";
+
+        assertEquals("R\u00f8dbyhavn S\u00f8nderborg", parseString(xml).text.toString());
+    }
+
+    /**
+     * The same for a declaration that no re-encoding could satisfy: the characters handed over as
+     * UTF-8 bytes are not a well-formed UTF-16 document at all, so the document did not parse.
+     */
+    @Test
+    void parsesAStringDeclaringAnEncodingItsCharactersAreNotIn() throws Exception {
+        final String xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><root>R\u00f8dbyhavn</root>";
+
+        assertEquals("R\u00f8dbyhavn", parseString(xml).text.toString());
+    }
+
+    /**
+     * The refusal belongs to the reader, not to one overload: a document arriving as a string is
+     * hardened exactly as one arriving as bytes.
+     */
+    @Test
+    void refusesAHostileDoctypeGivenAsAString(@TempDir Path tempDir) throws IOException {
+        final String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + XxePayloads.externalGeneralEntity("root", XxePayloads.writeSecretFile(tempDir))
+                + "\n<root>&leak;</root>";
+
+        final SAXParseException refusal = assertThrows(SAXParseException.class, () -> parseString(xml));
+
+        assertTrue(refusal.getMessage().contains(XxePayloads.REFUSAL),
+                () -> "refused, but not for its DOCTYPE: " + refusal.getMessage());
+        assertFalse(refusal.getMessage().contains(XxePayloads.FILE_CANARY), "the file's content leaked");
+    }
+
     private static void assertRefused(String doctype, String body) {
         final String xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + doctype + "\n<root>" + body + "</root>";
 
@@ -123,8 +165,17 @@ class SecureXmlSourceTest {
         assertFalse(refusal.getMessage().contains(XxePayloads.PARAMETER_CANARY), "the DTD fragment's content leaked");
     }
 
+    /** Parses the document as bytes, the form a caller reading an archive or a stream holds. */
     private static Recorder parse(String xml) throws Exception {
-        final SAXSource source = SecureXmlSource.of(xml.getBytes(StandardCharsets.UTF_8));
+        return parse(SecureXmlSource.of(xml.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /** Parses the document as characters, the form a caller holding a decoded string holds. */
+    private static Recorder parseString(String xml) throws Exception {
+        return parse(SecureXmlSource.of(xml));
+    }
+
+    private static Recorder parse(SAXSource source) throws Exception {
         final Recorder recorder = new Recorder();
         source.getXMLReader().setContentHandler(recorder);
         // Rethrow rather than let Xerces' default handler print the refusal to stderr: the test
